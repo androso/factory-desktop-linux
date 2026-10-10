@@ -3,7 +3,81 @@
 This is an **unofficial, personal-use packaging project** for Factory Desktop
 0.194.0. It packages the official Windows app's bundled JavaScript/UI with a
 pinned Linux Electron runtime. It is not built from Factory source, officially
-supported by Factory, or an auto-updater.
+supported by Factory. Native updates are explicitly requested local rebuilds,
+not an upstream auto-updater.
+
+## Easy Fedora installation and updates
+
+On **Fedora 44 x86_64**, clone this repository and run:
+
+```sh
+make bootstrap-native
+```
+
+This explicitly installs build prerequisites through `sudo dnf`, then builds,
+tests, verifies, packages, and installs Factory Desktop. Run it as your normal
+user, not with `sudo make`. If Node.js and the build prerequisites are already
+installed, use `make install-native`. You can also use
+`npm run bootstrap:native` and `npm run install:native`.
+
+For the very first checkout, if `git` or `make` is missing, install them with
+`sudo dnf install git make` before cloning/building.
+
+Builds use fresh, source-fingerprinted workspaces under `build/native/workspaces/`.
+Earlier portable bundles and RPMs are never overwritten. The workflow reuses a
+matching verified managed RPM on repeat installation; it never selects an
+artifact by filename or modification time. `make rpm` also reuses and re-verifies
+the portable app from `make build-app`, rather than assembling it again.
+Only the package-manager step runs
+with privileges. No login, model request, global CLI change, or callback
+registration is performed.
+
+Update from a clean, trusted checkout:
+
+```sh
+make update-native
+```
+
+This runs `git pull --ff-only`, reloads the updated workflow, and builds/installs
+the versions pinned by that checkout. Dirty or untracked source changes block
+the pull; use `make install-native` to build your local changes without pulling.
+This is **not** automatic discovery of the newest Factory release. New upstream
+Desktop versions still need inspected inputs, compatible patches, and updated
+pins in the repository. Desktop, Electron, and Droid are not upgraded separately
+behind your back. There is no background update service.
+
+Other commands:
+
+```sh
+make build-app       # Build and verify a portable app, without installing
+make rpm             # Build and verify an RPM, without installing
+make status          # Show exact managed artifacts and the installed RPM
+make rollback        # Install the immediately previous managed RPM
+make recover         # Reconcile an interrupted or cancelled installation
+```
+
+Installation and rollback refuse to replace the app while a Factory Desktop
+process owned by your user is running. Close the app, then rerun the command;
+the ready RPM is retained. Also ensure other users are not running it.
+Successful installation checks the installed build manifest and `rpm -V`.
+Same-version recipe changes use `dnf reinstall`; older versions use
+`dnf downgrade`. Rollback blocks that exact rejected artifact from being
+immediately installed again. A changed recipe must produce a new candidate.
+
+The workflow keeps its ready, installed, previous, and pending transaction
+records in `build/native/state.json`. A cancelled or interrupted `dnf` command
+requires `make recover` before retrying. Recovery never guesses about an
+ambiguous package state or runs a second package transaction. Inspect
+`dnf history` and `rpm -V factory-desktop-linux` if it reports ambiguity.
+A kernel-owned lock prevents concurrent workflows and releases on process exit.
+
+Rollback becomes available after two successful managed installations.
+An RPM installed before this workflow is not automatically imported as a
+rollback artifact. Do not delete `build/native/` if you need its rollback or
+recovery records. Failed build workspaces are retained for diagnosis and can
+consume significant disk space; inspect exact paths before removing them.
+The existing lower-level `npm run build`, `verify`, and `package:rpm` commands
+remain available.
 
 ## Current status
 
@@ -99,7 +173,7 @@ preserves the Windows app files separately from the extracted app.
 Existing extraction output is never overwritten.
 
 Packaging dependencies and the pinned `@factory/cli-linux-x64` binary are
-installed in the lockfile-hash-versioned isolated toolchain by
+installed in the manifest-and-lockfile-hash-versioned isolated toolchain by
 `npm run clean-install`. Lifecycle scripts are disabled, and the existing root
 `node_modules` is not modified. The CLI package is pinned in `package-lock.json`
 to the official npm tarball and SHA-512 integrity. The build bundles that

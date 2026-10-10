@@ -17,6 +17,8 @@ export const TOOLCHAIN_ROOT = path.join(
   ROOT,
   'build',
   `toolchain-${TARGET_DROID_CLI_VERSION}-${createHash('sha256')
+    .update(readFileSync(path.join(ROOT, 'package.json')))
+    .update('\0')
     .update(readFileSync(path.join(ROOT, 'package-lock.json')))
     .digest('hex')
     .slice(0, 12)}`,

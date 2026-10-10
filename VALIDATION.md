@@ -6,6 +6,39 @@ built and verified with Desktop 0.194.0, Droid CLI 0.238.0, and Electron
 42.11.12. Release 7 was not installed. Authenticated desktop/CLI compatibility
 is still unverified.
 
+## Fedora native installation/update workflow
+
+- Added Make and npm entrypoints for prerequisite bootstrap, verified local
+  build/package/install, clean-checkout fast-forward update, status, rollback,
+  and interrupted-installation recovery.
+- `npm run clean-install`, `npm run check`, `npm run check:native`, and
+  `npm test` passed on Fedora 44 x86_64. All 41 regression tests passed.
+  New tests cover artifact tampering, RPM identity validation, app-running
+  guards, managed rollback, rejected-candidate blocking, interrupted and
+  successful simulated installations, recovery, and build reuse.
+- `make rpm` passed end to end with the final source, including all 12 portable
+  checks and RPM metadata/payload/checksum validation. A second `make rpm`
+  reused the exact verified artifact without rebuilding. `make status` reports
+  it as ready, not installed by the workflow.
+- The final artifact is
+  `build/native/workspaces/7ab0499b51f9-18c6bc26-917d-4623-ae2a-6ea72ec5f6f9/dist/rpm/factory-desktop-linux-0.194.0-7.fc44.x86_64.rpm`.
+  Its SHA-256 is
+  `45253ca0f06562d7cede7c42508b42fa57f8e5c72ffd68a46df11344e72924fc`.
+- An earlier full-build attempt exceeded the four-minute execution limit
+  during RPM packaging. The final run completed with a longer limit. Earlier
+  workspaces and existing artifacts were preserved.
+- Toolchain paths now fingerprint both `package.json` and `package-lock.json`,
+  so npm command additions do not conflict with earlier isolated toolchains.
+  The final root clean-install created
+  `build/toolchain-0.238.0-95b46668bff3/`; earlier toolchains remain untouched.
+- The isolated GUI smoke check was skipped because `xvfb-run` is unavailable.
+  Authentication, interactive compatibility, real privileged installation,
+  bootstrap dependency installation, and real package rollback were not run.
+  Installation/recovery tests use simulated package-manager calls.
+- No existing RPM was replaced, user data changed, callback registered, or
+  model request sent. Native updates use pinned recipes from a trusted checkout;
+  no background service or automatic upstream-version discovery was enabled.
+
 ## Release-7 CLI upgrade
 
 - The latest official npm CLI version checked on 2026-10-10 was 0.238.0.

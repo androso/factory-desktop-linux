@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import {
   DROID_CLI_PACKAGE_NAME,
   TARGET_DROID_CLI_VERSION,
   TARGET_FACTORY_VERSION,
+  TOOLCHAIN_ROOT,
 } from '../scripts/lib.mjs';
 
 test('desktop and CLI are independently pinned to exact official versions', async () => {
@@ -21,4 +23,15 @@ test('desktop and CLI are independently pinned to exact official versions', asyn
     `https://registry.npmjs.org/${DROID_CLI_PACKAGE_NAME}/-/cli-linux-x64-${TARGET_DROID_CLI_VERSION}.tgz`,
   );
   assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+=*$/);
+});
+
+test('toolchain cache identity includes the manifest as well as the lockfile', async () => {
+  const manifest = await readFile(new URL('../package.json', import.meta.url));
+  const lock = await readFile(new URL('../package-lock.json', import.meta.url));
+  const digest = createHash('sha256').update(manifest).update('\0').update(lock).digest('hex').slice(0, 12);
+  assert.ok(TOOLCHAIN_ROOT.endsWith(`toolchain-${TARGET_DROID_CLI_VERSION}-${digest}`));
+  assert.notEqual(
+    digest,
+    createHash('sha256').update(lock).digest('hex').slice(0, 12),
+  );
 });
