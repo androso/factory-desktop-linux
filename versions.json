@@ -1,0 +1,14 @@
+{
+  "factory": "0.194.0",
+  "droidCli": "0.194.0",
+  "electron": "42.11.12",
+  "architecture": "x64",
+  "platform": "linux",
+  "installer": {
+    "filename": "Factory-0.194.0 Setup.exe",
+    "url": "https://downloads.factory.ai/factory-desktop/releases/0.194.0/win32/x64/Factory-0.194.0%20Setup.exe"
+  },
+  "electronArtifacts": {
+    "baseUrl": "https://github.com/electron/electron/releases/download"
+  }
+}

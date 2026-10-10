@@ -1,0 +1,8 @@
+node_modules/
+build/
+dist/
+.test/
+inspection/
+.npmrc
+*.log
+npm-debug.log*
