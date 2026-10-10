@@ -14,7 +14,6 @@ import {
   fail,
   hashFilesInTree,
   readJson,
-  readOsRelease,
   requireSuccess,
   run,
   sha256File,
@@ -26,6 +25,11 @@ import {
 import { patches, transformExact } from './patches.mjs';
 import { mergeSidecar } from './sidecar.mjs';
 import { inspectPinnedDroid } from './droid.mjs';
+import {
+  detectBuildHost,
+  packageInstallCommand,
+  packagesForMissingPrerequisites,
+} from './host.mjs';
 
 const require = toolRequire(import.meta.url);
 const asar = require('@electron/asar');
@@ -229,6 +233,7 @@ async function hashTestInputs() {
     'package.json',
     'package-lock.json',
     'versions.json',
+    ...await walkFiles(path.join(ROOT, 'assets')),
     ...await walkFiles(path.join(ROOT, 'scripts')),
     ...await walkFiles(path.join(ROOT, 'tests')),
   ].filter((file) => !file.includes(`${path.sep}node_modules${path.sep}`))
@@ -308,7 +313,7 @@ async function verifyExtractedInputs(extractionManifest) {
   }
 }
 
-async function runNativeRebuild(appDirectory) {
+async function runNativeRebuild(appDirectory, buildHost) {
   const keytarPath = path.join(appDirectory, 'node_modules', 'keytar');
   const keytarPackage = await readJson(path.join(keytarPath, 'package.json'), 'embedded keytar package');
   if (keytarPackage.name !== 'keytar' || !/^7\.9\./.test(keytarPackage.version ?? '')) {
@@ -316,7 +321,15 @@ async function runNativeRebuild(appDirectory) {
   }
   const pkgConfig = run('pkg-config', ['--exists', 'libsecret-1']);
   if (pkgConfig.status !== 0) {
-    fail('libsecret development files are missing. On Fedora, install libsecret-devel only after separate approval; this script never invokes sudo or a package manager.');
+    const packageName = buildHost.libsecretPackage;
+    const command = packageInstallCommand(
+      { profile: buildHost },
+      [packageName],
+    );
+    fail(
+      `${packageName} development files are missing for rebuilding keytar. ` +
+      `Request separate approval before running: ${command}. This script never invokes a package manager.`,
+    );
   }
   const isolatedBuildRoot = path.join(ROOT, 'build', `.native-keytar-${Date.now()}-${randomUUID()}`);
   await mkdir(isolatedBuildRoot, { mode: 0o700 });
@@ -391,12 +404,20 @@ async function runNativeRebuild(appDirectory) {
 }
 
 async function main() {
-  const osRelease = await readOsRelease();
-  if (osRelease.ID !== 'ubuntu' || osRelease.VERSION_ID !== '24.04' || process.arch !== 'x64') {
-    fail(`Target packaging is Ubuntu 24.04 x64; current host is ${osRelease.PRETTY_NAME ?? osRelease.ID ?? 'unknown'} (${process.arch}).`);
+  const host = await detectBuildHost();
+  if (!host.supported) {
+    fail(`Unsupported build host: ${host.issues.join(' ')}`);
   }
   if (run('pkg-config', ['--exists', 'libsecret-1']).status !== 0) {
-    fail('libsecret-1-dev is missing. Request and obtain separate approval for the exact privileged installation; this script never invokes sudo or apt.');
+    const missingPackage = host.profile.libsecretPackage;
+    const command = packageInstallCommand(
+      { profile: host.profile },
+      [missingPackage],
+    );
+    fail(
+      `${missingPackage} development files are missing. Request separate approval before running: ` +
+      `${command}. This script never invokes a package manager.`,
+    );
   }
   const extractionRoot = path.join(ROOT, 'build', 'extracted');
   const completion = await readFile(path.join(extractionRoot, 'EXTRACTION_COMPLETE'), 'utf8').catch(() => '');
@@ -446,7 +467,9 @@ async function main() {
     runtimeManifest.archive !== releaseArchive ||
     runtimeManifest.archiveSha256 !== expectedElectronHash ||
     runtimeManifest.publishedSha256 !== expectedElectronHash ||
-    runtimeManifest.executableSha256 !== await sha256File(electronExecutable)
+    runtimeManifest.executableSha256 !== await sha256File(electronExecutable) ||
+    runtimeManifest.sandboxMode !== 'user-namespace; chrome-sandbox mode 0755' ||
+    ((await stat(path.join(electronDist, 'chrome-sandbox'))).mode & 0o7777) !== 0o755
   ) {
     fail('Downloaded Electron runtime does not match its checksum-verified official release archive.');
   }
@@ -472,7 +495,7 @@ async function main() {
   const sidecarFilesAdded = await mergeSidecar(`${sourceAppar}.unpacked`, appWork);
 
   const patchRecords = await applyPatches(appWork, TARGET_FACTORY_VERSION);
-  const keytar = await runNativeRebuild(appWork);
+  const keytar = await runNativeRebuild(appWork, host.profile);
   const securityInspection = await inspectSecurityAndRuntime(appWork);
   const { externalCallbackScheme: callbackScheme, rendererScheme } = await detectProtocolScheme(appWork);
   const iconSource = await findIcon(appWork);
@@ -485,6 +508,7 @@ async function main() {
   const packagedElectron = path.join(assembled, 'factory-desktop');
   await rename(copiedElectron, packagedElectron);
   await chmod(packagedElectron, 0o755);
+  await chmod(path.join(assembled, 'chrome-sandbox'), 0o755);
 
   const resources = path.join(assembled, 'resources');
   await mkdir(resources, { recursive: true });
@@ -515,6 +539,7 @@ async function main() {
     await copyFile(path.join(ROOT, 'scripts', name), path.join(integrationDirectory, name));
     await chmod(path.join(integrationDirectory, name), 0o755);
   }
+  const desktopIntegrationSha256 = await hashFilesInTree(integrationDirectory);
 
   const inputFiles = [];
   for (const item of extractionManifest.inputFiles) {
@@ -536,6 +561,7 @@ async function main() {
       archiveSha256: runtimeManifest.archiveSha256,
       executableSha256: runtimeManifest.executableSha256,
       fileCount: runtimeManifest.runtimeFileCount,
+      sandboxMode: runtimeManifest.sandboxMode,
     },
     architecture: 'x64',
     platform: 'linux',
@@ -564,6 +590,7 @@ async function main() {
     keytarSidecarFileCount: sidecarFilesAdded,
     securityInspection,
     patches: patchRecords,
+    desktopIntegrationSha256,
     icon: path.basename(iconPath),
     builtAt: new Date().toISOString(),
   };

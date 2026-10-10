@@ -12,6 +12,7 @@ const files = [
   'package.json',
   'package-lock.json',
   'versions.json',
+  ...await walkFiles(path.join(ROOT, 'assets')),
   ...await walkFiles(path.join(ROOT, 'scripts')),
   ...await walkFiles(path.join(ROOT, 'tests')),
 ].filter((file) => !file.includes(`${path.sep}node_modules${path.sep}`))

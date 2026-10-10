@@ -4,12 +4,11 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import versions from '../versions.json' with { type: 'json' };
-import { ROOT, fail, sha256File } from './lib.mjs';
+import { ROOT, fail, sha256File, toolRequire } from './lib.mjs';
 import { inspectArchive } from './archive.mjs';
 
-const require = createRequire(import.meta.url);
+const require = toolRequire(import.meta.url);
 const sevenZip = require('7zip-bin');
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);

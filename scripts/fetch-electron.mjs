@@ -64,6 +64,14 @@ async function main() {
     if (await sha256File(existingExecutable) !== existingManifest.executableSha256) {
       fail('Existing Electron runtime executable does not match its recorded hash.');
     }
+    const sandbox = path.join(runtimeDirectory, 'chrome-sandbox');
+    const sandboxMode = (await import('node:fs/promises').then(({ stat }) => stat(sandbox))).mode & 0o7777;
+    if (
+      existingManifest.sandboxMode !== 'user-namespace; chrome-sandbox mode 0755' ||
+      sandboxMode !== 0o755
+    ) {
+      fail('Existing Electron runtime has not been prepared for user-namespace sandboxing without setuid permissions.');
+    }
     console.log(`Electron ${TARGET_ELECTRON_VERSION} runtime already exists with a verified matching manifest.`);
     console.log(`${filename} SHA-256: ${actual}`);
     return;
@@ -79,6 +87,8 @@ async function main() {
     fail(`Downloaded runtime reports ${versionResult.combined.trim()}, expected ${TARGET_ELECTRON_VERSION}.`);
   }
   await chmod(executable, 0o755);
+  const chromeSandbox = path.join(stagingDirectory, 'chrome-sandbox');
+  await chmod(chromeSandbox, 0o755);
   const runtimeFiles = await walkFiles(stagingDirectory);
   const requiredFiles = ['electron', 'chrome-sandbox', 'chrome_crashpad_handler', 'resources.pak', 'icudtl.dat'];
   for (const required of requiredFiles) {
@@ -96,6 +106,7 @@ async function main() {
     executableSha256: await sha256File(executable),
     downloadedAt: new Date().toISOString(),
     runtimeFileCount: runtimeFiles.length,
+    sandboxMode: 'user-namespace; chrome-sandbox mode 0755',
     source: 'Official Electron release ZIP, checksum matched to the pinned Electron package checksums.json',
   };
   await writeFile(path.join(stagingDirectory, 'runtime-manifest.json'), `${JSON.stringify(runtimeManifest, null, 2)}\n`, {

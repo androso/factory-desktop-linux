@@ -1,5 +1,35 @@
 import { fail } from './lib.mjs';
 
+// Keep the separate native menu bar hidden. The renderer supplies inline menu
+// buttons; bare Alt and F10 also open the existing application menu on Linux.
+const linuxMenuKeyboardHandler = `
+if(process.platform==="linux"){
+  let linuxAltMenuPending=false;
+  s.on("blur",()=>{linuxAltMenuPending=false});
+  s.webContents.on("before-input-event",(event,input)=>{
+    if(input.key==="Alt"){
+      if(input.type==="keyDown"&&!input.isAutoRepeat){
+        linuxAltMenuPending=!input.control&&!input.meta&&!input.shift;
+      }else if(input.type==="keyUp"){
+        const openMenu=linuxAltMenuPending&&!input.control&&!input.meta&&!input.shift;
+        linuxAltMenuPending=false;
+        if(openMenu){
+          event.preventDefault();
+          I.Menu.getApplicationMenu()?.popup({window:s});
+        }
+      }
+      return;
+    }
+    if(input.type!=="keyDown")return;
+    linuxAltMenuPending=false;
+    if(input.key==="F10"&&!input.isAutoRepeat&&!input.control&&!input.meta&&!input.shift&&!input.alt){
+      event.preventDefault();
+      I.Menu.getApplicationMenu()?.popup({window:s});
+    }
+  });
+}
+`;
+
 // Each compatibility change has an exact source precondition and is tied to
 // the extracted Factory version. Keep this patch after reproducing the bundled
 // behavior: the stock packaged Linux build registers its URI handler during
@@ -44,6 +74,54 @@ export const patches = [
     before: 'o=!i.getHostedServicesEnabled()||i.areDesktopUpdatesDisabledByCachedOrgSettings()?[]:',
     after: 'o=process.platform==="linux"||!i.getHostedServicesEnabled()||i.areDesktopUpdatesDisabledByCachedOrgSettings()?[]:',
     reason: 'Hide the update menu item on Linux.',
+  },
+  {
+    id: 'linux-integrated-window-controls',
+    file: '.vite/build/initLifecycle-C99OJOv_.js',
+    factoryVersion: '0.194.0',
+    before: 'function Zn(e={}){var g,y,m,v;NQ();const t=process.platform==="win32",',
+    after: 'function Zn(e={}){var g,y,m,v;NQ();const t=process.platform==="win32"||process.platform==="linux",',
+    reason: 'Use the existing hidden title bar, theme-aware overlay controls, and native-theme listener on Linux as well as Windows.',
+  },
+  {
+    id: 'linux-window-controls-zoom',
+    file: '.vite/build/initLifecycle-C99OJOv_.js',
+    factoryVersion: '0.194.0',
+    before: 'process.platform==="win32"&&e.setTitleBarOverlay({height:m9(t)})',
+    after: '(process.platform==="win32"||process.platform==="linux")&&e.setTitleBarOverlay({height:m9(t)})',
+    reason: 'Align integrated Linux window controls with the renderer title-bar height when app zoom changes.',
+  },
+  {
+    id: 'linux-inline-application-menu-handler',
+    file: '.vite/build/initLifecycle-C99OJOv_.js',
+    factoryVersion: '0.194.0',
+    before: 'if(process.platform!=="win32")return;const n=I.BrowserWindow.fromWebContents(e.sender);',
+    after: 'if(process.platform!=="win32"&&process.platform!=="linux")return;const n=I.BrowserWindow.fromWebContents(e.sender);',
+    reason: 'Allow the existing validated application-menu popup handler on Linux.',
+  },
+  {
+    id: 'linux-hide-separate-menu-bar',
+    file: '.vite/build/initLifecycle-C99OJOv_.js',
+    factoryVersion: '0.194.0',
+    before: 'process.platform==="win32")for(const l of qo())l.setMenuBarVisibility(!1)',
+    after: '(process.platform==="win32"||process.platform==="linux"))for(const l of qo())l.setMenuBarVisibility(!1)',
+    reason: 'Keep the separate Linux menu row hidden even when application menus are rebuilt after a locale change.',
+  },
+  {
+    id: 'linux-application-menu-keyboard',
+    file: '.vite/build/initLifecycle-C99OJOv_.js',
+    factoryVersion: '0.194.0',
+    before: 'if(t){s.setMenuBarVisibility(!1);const b=()=>',
+    after: `if(t){s.setMenuBarVisibility(!1);${linuxMenuKeyboardHandler}const b=()=>`,
+    reason: 'Retain bare Alt and F10 menu access without showing a separate menu bar or intercepting Alt shortcuts.',
+  },
+  {
+    id: 'linux-integrated-header-preload',
+    file: '.vite/build/preload.js',
+    factoryVersion: '0.194.0',
+    before: 'window:{showApplicationMenu:process.platform==="win32"?',
+    after: 'window:{showApplicationMenu:(process.platform==="win32"||process.platform==="linux")?',
+    reason: 'Enable the existing integrated renderer header, inline menus, drag regions, and overlay space reservation through its capability check.',
   },
 ];
 

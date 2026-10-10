@@ -79,6 +79,29 @@ export async function walkFiles(directory) {
   return results;
 }
 
+export async function walkDirectories(directory) {
+  const results = [];
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return results;
+    throw error;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) fail(`Tree contains a symbolic link: ${fullPath}`);
+    if (entry.isDirectory()) {
+      results.push(fullPath);
+      results.push(...await walkDirectories(fullPath));
+    } else if (!entry.isFile()) {
+      fail(`Tree contains a special file: ${fullPath}`);
+    }
+  }
+  return results;
+}
+
 export async function sha256File(filePath) {
   const hash = createHash('sha256');
   await new Promise((resolve, reject) => {
@@ -98,6 +121,41 @@ export async function hashFilesInTree(directory, prefix = '') {
     files[`${prefix}${relativePath}`] = await sha256File(file);
   }
   return createHash('sha256').update(JSON.stringify(files)).digest('hex');
+}
+
+export async function hashTreeWithModes(directory) {
+  const records = [];
+
+  async function visit(target, relativePath) {
+    const details = await lstat(target);
+    if (details.isSymbolicLink()) {
+      fail(`Cannot fingerprint a tree containing a symbolic link: ${relativePath || '.'}.`);
+    }
+    const mode = details.mode & 0o7777;
+    const portablePath = relativePath.split(path.sep).join('/') || '.';
+    if (details.isDirectory()) {
+      records.push({ path: portablePath, type: 'directory', mode });
+      const entries = await readdir(target, { withFileTypes: true });
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        await visit(path.join(target, entry.name), path.join(relativePath, entry.name));
+      }
+      return;
+    }
+    if (!details.isFile()) {
+      fail(`Cannot fingerprint a tree containing a special file: ${relativePath}.`);
+    }
+    records.push({
+      path: portablePath,
+      type: 'file',
+      mode,
+      size: details.size,
+      sha256: await sha256File(target),
+    });
+  }
+
+  await visit(directory, '');
+  return createHash('sha256').update(JSON.stringify(records)).digest('hex');
 }
 
 export function run(command, args, options = {}) {

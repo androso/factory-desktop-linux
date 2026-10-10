@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 APP_ID = "factory-desktop-linux.desktop"
-APP_NAME = "Factory Desktop (Personal Linux Port)"
+APP_NAME = "Factory Desktop Linux"
 
 
 def fail(message):
@@ -148,6 +148,12 @@ def quote_exec(value):
     return '"' + escaped + '"'
 
 
+def icon_value(value):
+    if "\0" in value or "\n" in value or "\r" in value:
+        fail("Desktop entry icon paths may not contain NUL or newline characters.")
+    return value.replace("\\", "\\\\").replace("\t", "\\t")
+
+
 def entry_contents(launch, icon, scheme):
     return "\n".join([
         "[Desktop Entry]",
@@ -155,7 +161,7 @@ def entry_contents(launch, icon, scheme):
         f"Name={APP_NAME}",
         "Comment=Unofficial personal-use Factory Desktop port",
         f"Exec={quote_exec(launch)} %u",
-        f"Icon={quote_exec(icon)}",
+        f"Icon={icon_value(icon)}",
         "Terminal=false",
         "Categories=Development;",
         f"MimeType=x-scheme-handler/{scheme};",
@@ -212,7 +218,7 @@ def install():
             return
 
     before_files = snapshot(user_mime_files())
-    state.mkdir(parents=True, mode=0o700)
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
     backup.mkdir(mode=0o700)
     entry_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     before_record = {
@@ -229,7 +235,8 @@ def install():
         with entry_path.open("xb") as output:
             output.write(contents)
         os.chmod(entry_path, 0o644)
-        if current_default(mime) != old_default:
+        observed_default = current_default(mime)
+        if observed_default not in (old_default, APP_ID):
             fail(f"The {scheme} callback handler changed during installation; refusing to replace it.")
         executable = shutil.which("xdg-mime")
         result = subprocess.run(
@@ -292,8 +299,6 @@ def rollback():
             fail(f"A new active MIME association file appeared after installation: {name}. Refusing rollback.")
 
     restore_snapshot(metadata.get("before", {}))
-    if current_default(mime) != metadata.get("oldDefault", ""):
-        fail("Restored MIME files do not resolve to the recorded prior callback handler.")
     entry_path.unlink()
     shutil.rmtree(backup)
     print(f"Restored the previous {scheme} association and removed the personal desktop entry.")

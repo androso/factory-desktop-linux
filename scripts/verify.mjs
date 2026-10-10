@@ -11,6 +11,8 @@ import {
   distributionDirectory,
   exists,
   fail,
+  hashFilesInTree,
+  hashTreeWithModes,
   readJson,
   requireSuccess,
   run,
@@ -29,6 +31,9 @@ const report = {
   checkedAt: new Date().toISOString(),
   factoryVersion: TARGET_FACTORY_VERSION,
   electronVersion: TARGET_ELECTRON_VERSION,
+  distributionDirectory: path.relative(ROOT, distribution),
+  buildManifestSha256: null,
+  distributionTreeSha256: null,
   checks,
   failures,
   interactiveChecks: {
@@ -146,6 +151,11 @@ async function main() {
     const iconPng = await exists(path.join(distribution, 'resources', 'factory-desktop.png'));
     const iconSvg = await exists(path.join(distribution, 'resources', 'factory-desktop.svg'));
     if (!iconPng && !iconSvg) fail('The packaged application icon is missing.');
+    const sandboxPath = path.join(distribution, 'chrome-sandbox');
+    const sandboxMode = (await import('node:fs/promises').then(({ stat }) => stat(sandboxPath))).mode & 0o7777;
+    if (sandboxMode !== 0o755) {
+      fail(`Electron chrome-sandbox must remain executable without setuid/setgid permissions, found mode 0${sandboxMode.toString(8)}.`);
+    }
     return 'required packaged paths exist';
   });
 
@@ -161,7 +171,8 @@ async function main() {
           buildManifest.droidCliVersion !== TARGET_DROID_CLI_VERSION ||
           buildManifest.droidBundleMode !== 'pinned-official-linux-package' ||
           buildManifest.architecture !== 'x64' ||
-          buildManifest.platform !== 'linux') {
+          buildManifest.platform !== 'linux' ||
+          buildManifest.electronRuntime?.sandboxMode !== 'user-namespace; chrome-sandbox mode 0755') {
         fail('Build manifest version/platform does not match the requested target.');
       }
       const scheme = (await import('node:fs/promises')).readFile(
@@ -170,6 +181,10 @@ async function main() {
       ).then((value) => value.trim());
       if ((await scheme) !== buildManifest.callbackScheme) {
         fail('Packaged callback scheme differs from the build manifest.');
+      }
+      const integrationHash = await hashFilesInTree(path.join(distribution, 'scripts'));
+      if (integrationHash !== buildManifest.desktopIntegrationSha256) {
+        fail('Packaged desktop integration scripts do not match the build manifest; rebuild the portable bundle.');
       }
       return `${buildManifest.factoryVersion}, Electron ${buildManifest.electronVersion}, Linux x64`;
     });
@@ -379,6 +394,12 @@ async function main() {
     requireSuccess(result, 'Electron keytar load test');
     if (!result.combined.includes('KEYTAR_LOAD_OK')) fail('Electron keytar test did not report success.');
     return result.combined.trim();
+  });
+
+  await check('distribution-fingerprint', async () => {
+    report.buildManifestSha256 = await sha256File(manifestPath);
+    report.distributionTreeSha256 = await hashTreeWithModes(distribution);
+    return `build manifest and ${report.distributionDirectory} tree fingerprinted`;
   });
 
   await writeReport();

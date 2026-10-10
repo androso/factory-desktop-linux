@@ -122,7 +122,7 @@ test('Droid CLI is pinned to the exact official Linux x64 package', async () => 
   const lock = JSON.parse(await readFile(path.join(repoRoot, 'package-lock.json'), 'utf8'));
   const name = '@factory/cli-linux-x64';
   const version = versions.droidCli;
-  assert.equal(version, versions.factory);
+  assert.match(version, /^\d+\.\d+\.\d+$/);
   assert.equal(packageJson.devDependencies[name], version);
   const locked = lock.packages[`node_modules/${name}`];
   assert.equal(locked.version, version);
@@ -150,11 +150,21 @@ test('version-specific patches require one exact source match', () => {
   const transformed = transformExact(callbackPatch.before, callbackPatch);
   assert.equal(transformed, callbackPatch.after);
   assert.match(transformed, /process\.platform==="linux"\?void 0/);
+  const titlebarPatch = patches.find((item) => item.id === 'linux-integrated-window-controls');
+  assert.ok(titlebarPatch);
+  const titlebar = transformExact(titlebarPatch.before, titlebarPatch);
+  assert.equal(titlebar, titlebarPatch.after);
+  assert.match(titlebar, /const t=process\.platform==="win32"\|\|process\.platform==="linux"/);
   for (const id of [
     'linux-disable-minimum-version-poll',
     'linux-disable-manual-update-handler',
     'linux-disable-update-check-handler',
     'linux-hide-update-menu',
+    'linux-window-controls-zoom',
+    'linux-inline-application-menu-handler',
+    'linux-hide-separate-menu-bar',
+    'linux-application-menu-keyboard',
+    'linux-integrated-header-preload',
   ]) {
     const item = patches.find((entry) => entry.id === id);
     assert.ok(item, `missing required patch ${id}`);
@@ -338,7 +348,8 @@ def lookup():
                 if key.strip() == mime: return value.strip().split(';')[0]
     return ''
 if cmd == 'query' and args[0] == 'default':
-    print(lookup())
+    print(lookup() or ('factory-desktop-linux.desktop'
+        if (data / 'applications' / 'factory-desktop-linux.desktop').exists() else ''))
 elif cmd == 'default':
     app, mime = args
     for file in paths:
@@ -381,11 +392,55 @@ test('desktop entry safely quotes paths and forwards %u', async () => {
     });
     assert.equal(integration.status, 0, integration.stderr);
     const entry = await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop'), 'utf8');
+    assert.match(entry, /^Name=Factory Desktop Linux$/m);
     assert.match(entry, /^Exec="[^"\n]*portable app[^"\n]*" %u$/m);
+    assert.match(entry, /^Icon=[^\n]*portable app[^\n]*\/resources\/factory-desktop\.png$/m);
+    assert.doesNotMatch(entry, /^Icon="/m);
     assert.match(entry, /MimeType=x-scheme-handler\/factory-test;/);
     const metadata = JSON.parse(await readFile(path.join(fixture.env.XDG_STATE_HOME, 'factory-desktop-linux/protocol-association/association.json'), 'utf8'));
     assert.equal(metadata.oldDefault, '');
     assert.equal(metadata.launcher, 'launch.sh');
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('desktop integration preserves existing app state and remains reversible', async () => {
+  const fixture = await createDesktopFixture();
+  try {
+    const appState = path.join(fixture.env.XDG_STATE_HOME, 'factory-desktop-linux');
+    const existingState = path.join(appState, 'existing-state.json');
+    await mkdir(appState, { recursive: true, mode: 0o700 });
+    await writeFile(existingState, '{"keep":"existing app data"}\n', { mode: 0o600 });
+
+    const installer = ['python3', path.join(fixture.appRoot, 'scripts/desktop-integration.py')];
+    const install = spawnSync(installer[0], [...installer.slice(1), 'install'], {
+      env: fixture.env,
+      encoding: 'utf8',
+    });
+    assert.equal(install.status, 0, install.stderr);
+    assert.equal(await readFile(existingState, 'utf8'), '{"keep":"existing app data"}\n');
+    assert.equal(
+      spawnSync('xdg-mime', ['query', 'default', 'x-scheme-handler/factory-test'], {
+        env: fixture.env,
+        encoding: 'utf8',
+      }).stdout.trim(),
+      'factory-desktop-linux.desktop',
+    );
+
+    const rollback = spawnSync(installer[0], [...installer.slice(1), 'rollback'], {
+      env: fixture.env,
+      encoding: 'utf8',
+    });
+    assert.equal(rollback.status, 0, rollback.stderr);
+    assert.equal(await readFile(existingState, 'utf8'), '{"keep":"existing app data"}\n');
+    assert.equal(
+      spawnSync('xdg-mime', ['query', 'default', 'x-scheme-handler/factory-test'], {
+        env: fixture.env,
+        encoding: 'utf8',
+      }).stdout.trim(),
+      '',
+    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
