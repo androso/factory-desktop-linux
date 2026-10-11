@@ -81,10 +81,14 @@ async function main() {
   await extractArchiveSafely(archivePath, stagingDirectory);
   const executable = path.join(stagingDirectory, 'electron');
   await assertElfX64(executable, 'Downloaded Electron executable');
-  const versionResult = run(executable, ['--version']);
+  // Probe the version in ELECTRON_RUN_AS_NODE mode, matching verify.mjs. This
+  // avoids requiring a display or a usable Chromium sandbox on the build host.
+  const versionResult = run(executable, ['-p', 'process.versions.electron'], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
   requireSuccess(versionResult, 'Downloaded Electron version check');
-  if (!versionResult.combined.includes(TARGET_ELECTRON_VERSION)) {
-    fail(`Downloaded runtime reports ${versionResult.combined.trim()}, expected ${TARGET_ELECTRON_VERSION}.`);
+  if (versionResult.stdout.trim() !== TARGET_ELECTRON_VERSION) {
+    fail(`Downloaded runtime reports Electron ${versionResult.stdout.trim() || '<unknown>'}, expected ${TARGET_ELECTRON_VERSION}.`);
   }
   await chmod(executable, 0o755);
   const chromeSandbox = path.join(stagingDirectory, 'chrome-sandbox');

@@ -13,6 +13,7 @@ import {
   COMMON_BUILD_COMMANDS,
   FEDORA_RPM_COMMANDS,
   SUPPORTED_BUILD_HOSTS,
+  UBUNTU_DEB_COMMANDS,
   evaluateBuildHost,
   packageInstallCommand,
   packagesForMissingPrerequisites,
@@ -43,7 +44,7 @@ async function tempDir(prefix = 'factory-rpm-test-') {
   return mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-test('build host support is limited to Ubuntu 24.04 and Fedora 44 x86_64', () => {
+test('build host support covers Ubuntu 24.04+ and Fedora 44 x86_64', () => {
   const fedora = evaluateBuildHost({
     osRelease: { ID: 'fedora', VERSION_ID: '44', PRETTY_NAME: 'Fedora Linux 44' },
     machine: 'x86_64',
@@ -54,18 +55,34 @@ test('build host support is limited to Ubuntu 24.04 and Fedora 44 x86_64', () =>
     machine: 'x86_64',
     nodeArchitecture: 'x64',
   });
+  const newerUbuntu = evaluateBuildHost({
+    osRelease: { ID: 'ubuntu', VERSION_ID: '26.04', PRETTY_NAME: 'Ubuntu 26.04.1 LTS' },
+    machine: 'x86_64',
+    nodeArchitecture: 'x64',
+  });
   assert.equal(fedora.supported, true);
   assert.equal(fedora.profile.rpmPackaging, true);
+  assert.equal(fedora.profile.debPackaging, false);
   assert.equal(ubuntu.supported, true);
   assert.equal(ubuntu.profile.rpmPackaging, false);
+  assert.equal(ubuntu.profile.debPackaging, true);
+  assert.equal(newerUbuntu.supported, true);
   assert.equal(SUPPORTED_BUILD_HOSTS.length, 2);
   assert.deepEqual(requiredCommandsForHost(fedora.profile), [
     ...COMMON_BUILD_COMMANDS,
     ...FEDORA_RPM_COMMANDS,
   ]);
-  assert.deepEqual(requiredCommandsForHost(ubuntu.profile), COMMON_BUILD_COMMANDS);
+  assert.deepEqual(requiredCommandsForHost(ubuntu.profile), [
+    ...COMMON_BUILD_COMMANDS,
+    ...UBUNTU_DEB_COMMANDS,
+  ]);
   assert.equal(evaluateBuildHost({
     osRelease: { ID: 'fedora', VERSION_ID: '43' },
+    machine: 'x86_64',
+    nodeArchitecture: 'x64',
+  }).supported, false);
+  assert.equal(evaluateBuildHost({
+    osRelease: { ID: 'ubuntu', VERSION_ID: '22.04', PRETTY_NAME: 'Ubuntu 22.04' },
     machine: 'x86_64',
     nodeArchitecture: 'x64',
   }).supported, false);
@@ -87,6 +104,20 @@ test('build host support is limited to Ubuntu 24.04 and Fedora 44 x86_64', () =>
   assert.equal(
     packageInstallCommand(prereqHost, ['libsecret-devel']),
     'sudo dnf install libsecret-devel',
+  );
+
+  const ubuntuPrereqHost = { profile: ubuntu.profile, id: 'ubuntu' };
+  const ubuntuPackages = packagesForMissingPrerequisites(
+    ubuntuPrereqHost,
+    ['dpkg-deb', 'readelf'],
+    true,
+  );
+  assert.ok(ubuntuPackages.includes('dpkg'));
+  assert.ok(ubuntuPackages.includes('binutils'));
+  assert.ok(ubuntuPackages.includes('libsecret-1-dev'));
+  assert.equal(
+    packageInstallCommand(ubuntuPrereqHost, ['dpkg']),
+    'sudo apt-get install dpkg',
   );
 });
 
@@ -176,7 +207,7 @@ test('RPM wrapper and desktop entry do not register callback handlers', async ()
   assert.match(spec, /^BuildArch:\s+x86_64$/m);
   assert.match(spec, /^\/opt\/factory-desktop-linux\/$/m);
   assert.match(spec, /^\/usr\/bin\/factory-desktop-linux$/m);
-  assert.match(spec, /^\/usr\/share\/applications\/factory-desktop-linux\.desktop$/m);
+  assert.match(spec, /^\/usr\/share\/applications\/factory\.desktop$/m);
   assert.match(spec, /%license/);
   assert.doesNotMatch(spec, /^%post|^%preun|^%postun|^Requires:/m);
 });
@@ -353,15 +384,15 @@ test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBu
     await chmod(path.join(payload, 'libfactory-private.so.1'), 0o755);
     await writeFile(path.join(payload, 'launch.sh'), '#!/bin/sh\nexec "$ROOT/factory-desktop" "$@"\n', { mode: 0o755 });
     await writeFile(path.join(payload, 'resources', 'bin', 'droid'), 'synthetic bundled cli', { mode: 0o755 });
-    await writeFile(path.join(payload, 'resources', 'factory-desktop.svg'),
-      await readFile(path.join(repoRoot, 'assets/factory-desktop.svg')), { mode: 0o644 });
+    await writeFile(path.join(payload, 'resources', 'factory-desktop.png'),
+      await readFile(path.join(repoRoot, 'assets/factory-desktop.png')), { mode: 0o644 });
     await writeFile(path.join(payload, 'build-manifest.json'), '{"factoryVersion":"0.194.0"}\n', { mode: 0o644 });
     await writeFile(path.join(sources, 'PERSONAL-USE-NOTICE.txt'),
       await readFile(path.join(repoRoot, 'assets/rpm-personal-use-notice.txt')), { mode: 0o644 });
-    await writeFile(path.join(sources, 'factory-desktop-linux.desktop'), createDesktopEntry(), { mode: 0o644 });
+    await writeFile(path.join(sources, 'factory.desktop'), createDesktopEntry(), { mode: 0o644 });
     await writeFile(path.join(sources, 'factory-desktop-linux'), createSystemWrapper(), { mode: 0o755 });
     await writeFile(path.join(sources, 'factory-desktop-linux-icon'),
-      await readFile(path.join(repoRoot, 'assets/factory-desktop.svg')), { mode: 0o644 });
+      await readFile(path.join(repoRoot, 'assets/factory-desktop.png')), { mode: 0o644 });
     await writeFile(path.join(top, 'SPECS', 'factory-desktop-linux.spec'),
       await readFile(path.join(repoRoot, 'scripts/factory-desktop-linux.spec')));
 
@@ -375,8 +406,8 @@ test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBu
     const exclusion = privateSonameExclusion(['libfactory-private.so.1']);
     const built = spawnSync('rpmbuild', [
       '--define', `_topdir ${top}`,
-      '--define', 'app_icon_size scalable',
-      '--define', 'app_icon_extension svg',
+      '--define', 'app_icon_size 256x256',
+      '--define', 'app_icon_extension png',
       '--define', `__provides_exclude ${exclusion}`,
       '--define', `__requires_exclude ${exclusion}`,
       '-bb',
@@ -418,8 +449,8 @@ test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBu
       'launch.sh',
       'libfactory-private.so.1',
       'resources/bin/droid',
-      'resources/factory-desktop.svg',
-    ], '/usr/share/icons/hicolor/scalable/apps/factory-desktop-linux.svg', [
+      'resources/factory-desktop.png',
+    ], '/usr/share/icons/hicolor/256x256/apps/factory-desktop-linux.png', [
       'empty',
       'empty/nested',
       'resources',

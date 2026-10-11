@@ -268,7 +268,7 @@ async function findIcon(appDirectory) {
       };
       return score(a) - score(b) || a.localeCompare(b);
     });
-  return icons[0] ?? path.join(ROOT, 'assets', 'factory-desktop.svg');
+  return icons[0] ?? path.join(ROOT, 'assets', 'factory-desktop.png');
 }
 
 async function verifyElectronArtifact() {
@@ -473,10 +473,14 @@ async function main() {
   ) {
     fail('Downloaded Electron runtime does not match its checksum-verified official release archive.');
   }
-  const electronVersionResult = run(electronExecutable, ['--version']);
+  // Probe the version in ELECTRON_RUN_AS_NODE mode, matching verify.mjs. This
+  // avoids requiring a display or a usable Chromium sandbox on the build host.
+  const electronVersionResult = run(electronExecutable, ['-p', 'process.versions.electron'], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
   requireSuccess(electronVersionResult, 'Electron version check');
-  if (!electronVersionResult.combined.includes(TARGET_ELECTRON_VERSION)) {
-    fail(`Electron runtime reports ${electronVersionResult.combined.trim()}, expected ${TARGET_ELECTRON_VERSION}.`);
+  if (electronVersionResult.stdout.trim() !== TARGET_ELECTRON_VERSION) {
+    fail(`Electron runtime reports ${electronVersionResult.stdout.trim() || '<unknown>'}, expected ${TARGET_ELECTRON_VERSION}.`);
   }
   const electronArtifact = await verifyElectronArtifact();
 

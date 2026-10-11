@@ -9,7 +9,7 @@ License:        LicenseRef-Proprietary
 BuildArch:      x86_64
 
 Source0:        PERSONAL-USE-NOTICE.txt
-Source1:        factory-desktop-linux.desktop
+Source1:        factory.desktop
 Source2:        factory-desktop-linux
 Source3:        factory-desktop-linux-icon
 
@@ -27,7 +27,7 @@ mkdir -p "%{buildroot}/opt"
 cp -a "%{_sourcedir}/payload" "%{buildroot}/opt/factory-desktop-linux"
 find "%{buildroot}/opt/factory-desktop-linux" -type d -exec chmod 0755 {} +
 install -D -m 0755 "%{SOURCE2}" "%{buildroot}/usr/bin/factory-desktop-linux"
-install -D -m 0644 "%{SOURCE1}" "%{buildroot}/usr/share/applications/factory-desktop-linux.desktop"
+install -D -m 0644 "%{SOURCE1}" "%{buildroot}/usr/share/applications/factory.desktop"
 install -D -m 0644 "%{SOURCE0}" "%{buildroot}/usr/share/licenses/%{name}/PERSONAL-USE-NOTICE.txt"
 install -D -m 0644 "%{SOURCE3}" "%{buildroot}/usr/share/icons/hicolor/%{app_icon_size}/apps/factory-desktop-linux.%{app_icon_extension}"
 
@@ -35,7 +35,7 @@ install -D -m 0644 "%{SOURCE3}" "%{buildroot}/usr/share/icons/hicolor/%{app_icon
 %defattr(-,root,root,-)
 /opt/factory-desktop-linux/
 /usr/bin/factory-desktop-linux
-/usr/share/applications/factory-desktop-linux.desktop
+/usr/share/applications/factory.desktop
 %{_datadir}/icons/hicolor/%{app_icon_size}/apps/factory-desktop-linux.%{app_icon_extension}
 %license %{_licensedir}/%{name}/PERSONAL-USE-NOTICE.txt
 

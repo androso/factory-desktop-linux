@@ -348,8 +348,8 @@ def lookup():
                 if key.strip() == mime: return value.strip().split(';')[0]
     return ''
 if cmd == 'query' and args[0] == 'default':
-    print(lookup() or ('factory-desktop-linux.desktop'
-        if (data / 'applications' / 'factory-desktop-linux.desktop').exists() else ''))
+    print(lookup() or ('factory.desktop'
+        if (data / 'applications' / 'factory.desktop').exists() else ''))
 elif cmd == 'default':
     app, mime = args
     for file in paths:
@@ -391,7 +391,7 @@ test('desktop entry safely quotes paths and forwards %u', async () => {
       encoding: 'utf8',
     });
     assert.equal(integration.status, 0, integration.stderr);
-    const entry = await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop'), 'utf8');
+    const entry = await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop'), 'utf8');
     assert.match(entry, /^Name=Factory Desktop Linux$/m);
     assert.match(entry, /^Exec="[^"\n]*portable app[^"\n]*" %u$/m);
     assert.match(entry, /^Icon=[^\n]*portable app[^\n]*\/resources\/factory-desktop\.png$/m);
@@ -425,7 +425,7 @@ test('desktop integration preserves existing app state and remains reversible', 
         env: fixture.env,
         encoding: 'utf8',
       }).stdout.trim(),
-      'factory-desktop-linux.desktop',
+      'factory.desktop',
     );
 
     const rollback = spawnSync(installer[0], [...installer.slice(1), 'rollback'], {
@@ -459,7 +459,7 @@ test('desktop handler replacement requires interactive approval', async () => {
     assert.match(result.stderr, /No interactive approval/);
     assert.equal(await readFile(file, 'utf8'), '[Default Applications]\nx-scheme-handler/factory-test=existing.desktop;\n');
     await assert.rejects(
-      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop')),
+      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop')),
       { code: 'ENOENT' },
     );
   } finally {
@@ -482,7 +482,7 @@ test('desktop rollback restores all active MIME files and refuses intervening ch
       path.join(fixture.env.XDG_DATA_HOME, 'applications', 'kde-mimeapps.list'),
     ];
     for (const activeFile of activeFiles) {
-      assert.match(await readFile(activeFile, 'utf8'), /factory-desktop-linux\.desktop/);
+      assert.match(await readFile(activeFile, 'utf8'), /factory\.desktop/);
     }
     const association = path.join(fixture.env.XDG_STATE_HOME, 'factory-desktop-linux/protocol-association/association.json');
     const metadata = JSON.parse(await readFile(association, 'utf8'));
@@ -493,7 +493,7 @@ test('desktop rollback restores all active MIME files and refuses intervening ch
     const refused = spawnSync(installer[0], [...installer.slice(1), 'rollback'], { env: fixture.env, encoding: 'utf8' });
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /changed after installation/);
-    assert.ok((await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop'), 'utf8'))
+    assert.ok((await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop'), 'utf8'))
       .includes('Factory Desktop'));
 
     await writeFile(changedFile, Buffer.from(metadata.after[changedFile].content, 'base64'));
@@ -503,7 +503,7 @@ test('desktop rollback restores all active MIME files and refuses intervening ch
       await assert.rejects(() => readFile(activeFile), { code: 'ENOENT' });
     }
     await assert.rejects(
-      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop')),
+      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop')),
       { code: 'ENOENT' },
     );
   } finally {

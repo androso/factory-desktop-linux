@@ -20,10 +20,16 @@ unset FACTORY_DISABLE_KEYRING
 unset FACTORY_DESKTOP_RENDERER_URL FACTORY_E2E_DAEMON_HOOKS
 unset FACTORY_ENV FACTORY_DEPLOYMENT_ENV FACTORY_RELEASE_CHANNEL
 unset NODE_OPTIONS ELECTRON_RUN_AS_NODE ELECTRON_NO_ASAR
-export FACTORY_HOME_OVERRIDE="$PORT_DATA/factory-home"
+export FACTORY_HOME_OVERRIDE="${FACTORY_HOME_OVERRIDE:-$HOME}"
 export FACTORY_ENV=production
 export FACTORY_RELEASE_CHANNEL=production
+export XDG_DATA_DIRS="${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export XDG_DATA_HOME="$PORT_DATA/xdg-data"
+for MIME_FILE in "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list" "${XDG_CONFIG_HOME:-$HOME/.config}/"*-mimeapps.list; do
+  if [ -f "$MIME_FILE" ]; then
+    ln -sfn "$MIME_FILE" "$PORT_CONFIG/$(basename -- "$MIME_FILE")"
+  fi
+done
 export XDG_CONFIG_HOME="$PORT_CONFIG"
 export XDG_CACHE_HOME="$PORT_CACHE"
 export XDG_STATE_HOME="$PORT_STATE"

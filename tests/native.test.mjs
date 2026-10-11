@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readlink as readLink, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  BUILD_STEPS, SOURCE_INPUTS, NativeWorkflow, finishTransaction,
-  installOperation, parseIdentity, runningAppProcesses, sourceFingerprint,
+  BUILD_STEPS, SOURCE_INPUTS, NativeWorkflow, backendForHost, compareDebVersions, debBackend,
+  finishTransaction, installOperation, parseDebIdentity, parseIdentity, rpmBackend,
+  runningAppProcesses, sourceFingerprint,
 } from '../scripts/native.mjs';
 import { sha256File } from '../scripts/lib.mjs';
 
@@ -46,6 +48,43 @@ test('RPM identity validation rejects other packages, architectures, and macro i
     'factory-desktop-linux\t%{lua:print(1)}\tx86_64',
     'factory-desktop-linux\t0.194.0-7.fc44\tx86_64\textra',
   ]) assert.throws(() => parseIdentity(input), /Unexpected RPM/);
+});
+
+test('Debian identity, backend selection, and install commands', () => {
+  assert.deepEqual(parseDebIdentity('factory-desktop-linux\t0.194.0-7\tamd64'), {
+    name: 'factory-desktop-linux', version: '0.194.0-7', architecture: 'amd64',
+  });
+  for (const input of [
+    'other\t0.194.0-7\tamd64',
+    'factory-desktop-linux\t0.194.0\tamd64',
+    'factory-desktop-linux\t0.194.0-7\taarch64',
+    'factory-desktop-linux\t%{lua:print(1)}\tamd64',
+    'factory-desktop-linux\t0.194.0-7\tamd64\textra',
+  ]) assert.throws(() => parseDebIdentity(input), /Unexpected Debian/);
+
+  assert.equal(backendForHost({ profile: { rpmPackaging: true } }), rpmBackend);
+  assert.equal(backendForHost({ profile: { debPackaging: true } }), debBackend);
+  assert.equal(backendForHost({ profile: {} }), null);
+  assert.deepEqual(rpmBackend.installCommand('install', '/tmp/x.rpm'),
+    ['sudo', ['dnf', 'install', '-y', '/tmp/x.rpm']]);
+  assert.deepEqual(debBackend.installCommand('install', '/tmp/x.deb'),
+    ['sudo', ['apt-get', 'install', '-y', '/tmp/x.deb']]);
+  assert.deepEqual(debBackend.installCommand('reinstall', '/tmp/x.deb'),
+    ['sudo', ['apt-get', 'install', '-y', '--reinstall', '/tmp/x.deb']]);
+  assert.deepEqual(debBackend.installCommand('downgrade', '/tmp/x.deb'),
+    ['sudo', ['apt-get', 'install', '-y', '--allow-downgrades', '/tmp/x.deb']]);
+});
+
+const canCompareDeb = spawnSync('dpkg', ['--compare-versions', '1', 'eq', '1'], { encoding: 'utf8' }).status === 0;
+test('Debian version ordering drives install, reinstall, and downgrade', { skip: !canCompareDeb }, () => {
+  assert.equal(compareDebVersions('0.194.0-7', '0.194.0-7'), 0);
+  assert.equal(compareDebVersions('0.194.0-6', '0.194.0-7'), -1);
+  assert.equal(compareDebVersions('0.195.0-1', '0.194.0-7'), 1);
+  assert.throws(() => compareDebVersions('not-a-version', '0.194.0-7'), /Unexpected Debian/);
+  assert.equal(
+    installOperation({ version: '0.194.0-6' }, { version: '0.194.0-7' }, compareDebVersions),
+    'downgrade',
+  );
 });
 
 test('package installation chooses install, reinstall, or downgrade using RPM ordering', () => {
@@ -125,6 +164,17 @@ test('app guard does not treat permission errors outside executable-link reads a
     runningAppProcesses(root, process.getuid(), { lstat: async () => { throw denied; } }),
     (error) => error === denied,
   );
+}));
+
+test('app guard reads the command line when a process hides its executable', async () => temporary(async (root) => {
+  for (const [pid, commandLine] of [
+    ['201', '/opt/factory-desktop-linux/factory-desktop\0--no-sandbox\0'],
+    ['202', '/usr/bin/ssh-agent\0-D\0-a\0/run/user/1000/gcr/.ssh\0'],
+  ]) {
+    await mkdir(path.join(root, pid, 'exe'), { recursive: true });
+    await writeFile(path.join(root, pid, 'cmdline'), commandLine);
+  }
+  assert.deepEqual(await runningAppProcesses(root), ['201']);
 }));
 
 test('managed RPM validates checksum, package identity, and embedded build manifest', async () => temporary(async (root) => {
@@ -216,11 +266,11 @@ test('packaging reuses a verified portable workspace and completed RPMs without 
   };
   workflow.checkArtifact = async () => {};
   await workflow.build();
-  await workflow.build({ packageRpm: true });
+  await workflow.build({ packageArtifact: true });
   assert.equal(assemblies, 1);
   assert.ok(calls.some(([command, args]) => command === 'npm' && args[1] === 'verify'));
   const totalCalls = calls.length;
-  await workflow.build({ packageRpm: true });
+  await workflow.build({ packageArtifact: true });
   assert.equal(calls.length, totalCalls);
   assert.equal(assemblies, 1);
 }));
@@ -277,14 +327,18 @@ test('checkout updates refuse dirty work and re-execute updated code under the e
   ]);
 });
 
-test('native entrypoints expose Fedora workflow without enabling background updates', async () => {
+test('native entrypoints expose Ubuntu and Fedora workflows without background updates', async () => {
   const root = path.resolve(new URL('..', import.meta.url).pathname);
   const shell = await readFile(path.join(root, 'scripts/native.sh'), 'utf8');
   assert.match(shell, /flock -n -E 75/);
   assert.match(shell, /sudo dnf install -y/);
+  assert.match(shell, /sudo apt-get install -y/);
   assert.doesNotMatch(shell, /curl.*\|\s*(sh|bash)|--no-sandbox|systemctl.*enable/);
   const makefile = await readFile(path.join(root, 'Makefile'), 'utf8');
-  for (const target of ['bootstrap-native', 'install-native', 'update-native', 'rollback', 'recover']) {
+  for (const target of ['bootstrap-native', 'install-native', 'update-native', 'deb', 'rpm', 'rollback', 'recover']) {
     assert.ok(makefile.includes(target));
   }
+  const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+  assert.equal(packageJson.scripts['package:deb'], 'node scripts/package-deb.mjs');
+  assert.equal(packageJson.scripts['package:rpm'], 'node scripts/package-rpm.mjs');
 });

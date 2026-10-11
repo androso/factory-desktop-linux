@@ -3,6 +3,7 @@ import {
   COMMON_BUILD_COMMANDS,
   FEDORA_RPM_COMMANDS,
   OPTIONAL_BUILD_COMMANDS,
+  UBUNTU_DEB_COMMANDS,
   detectBuildHost,
   packageInstallCommand,
   packagesForMissingPrerequisites,
@@ -15,9 +16,10 @@ const requiredCommands = requiredCommandsForHost(host.profile);
 const evidence = {
   checkedAt: new Date().toISOString(),
   requested: {
-    distributions: ['Ubuntu 24.04', 'Fedora 44'],
+    distributions: ['Ubuntu 24.04 or newer', 'Fedora 44'],
     architecture: 'x86_64',
     fedoraRpmTarget: 'Fedora 44 x86_64 only',
+    ubuntuDebTarget: 'Ubuntu 24.04 or newer x86_64',
   },
   observed: {
     distribution: host.displayName,
@@ -30,6 +32,7 @@ const evidence = {
   requiredCommands,
   buildCommands: COMMON_BUILD_COMMANDS,
   fedoraRpmCommands: host.profile?.rpmPackaging ? FEDORA_RPM_COMMANDS : [],
+  ubuntuDebCommands: host.profile?.debPackaging ? UBUNTU_DEB_COMMANDS : [],
   optionalCommands: OPTIONAL_BUILD_COMMANDS,
   missingCommands: [],
   missingRequiredCommands: [],

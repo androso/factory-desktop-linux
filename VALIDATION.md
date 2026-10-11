@@ -6,6 +6,31 @@ built and verified with Desktop 0.194.0, Droid CLI 0.238.0, and Electron
 42.11.12. Release 7 was not installed. Authenticated desktop/CLI compatibility
 is still unverified.
 
+## Ubuntu `.deb` packaging and workflow (not validated end to end)
+
+- Added Ubuntu 24.04 or newer x86_64 `.deb` packaging (`npm run package:deb`,
+  `make deb`) and a managed `apt-get`/`dpkg` install, update, status, rollback,
+  and recovery workflow that mirrors the Fedora RPM path. `scripts/deb.mjs`,
+  `scripts/package-deb.mjs`, `scripts/packaging-common.mjs`, and
+  `scripts/portable-payload.mjs` implement it, and `scripts/package-rpm.mjs` was
+  refactored to share the portable-bundle verification and payload-publishing
+  helpers so both artifacts use the same gate.
+- `npm run check` (`check:native` included) and `npm test` passed on Ubuntu
+  26.04 x86_64 with pnpm-installed pinned dependencies. Of 52 tests, 51 passed
+  and 1 was skipped: the synthetic Fedora RPM build, because `rpmbuild` is not
+  installed on Ubuntu. New Debian tests cover output naming and collision
+  refusal, the control file, payload layout, dependency resolution, `md5sums`,
+  installed size, backend selection, Debian identity/version comparison, and a
+  synthetic `dpkg-deb` build whose control section, file list, permissions,
+  ownership, and payload hashes were re-validated.
+- Not validated here: a full `npm run package:deb` against the real portable
+  Factory bundle (which needs the complete acquire/extract/electron/build
+  pipeline), a real `sudo apt-get install`, a real `.deb` rollback, and a real
+  Electron sandbox smoke run. The repository's `npm run clean-install` step was
+  not used; pinned dependencies were installed with
+  `pnpm install --ignore-scripts` and the bundled `7za` was made executable
+  manually.
+
 ## Fedora native installation/update workflow
 
 - Added Make and npm entrypoints for prerequisite bootstrap, verified local
