@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readlink as readLink, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -83,6 +83,48 @@ test('app guard detects active and deleted installed executables and ignores oth
     await symlink(exe, path.join(root, pid, 'exe'));
   }
   assert.deepEqual((await runningAppProcesses(root)).sort(), ['101', '102', '104']);
+}));
+
+test('app guard skips unreadable executable links and still detects readable app processes', async () => temporary(async (root) => {
+  for (const [pid, exe] of [
+    ['201', '/opt/factory-desktop-linux/factory-desktop'],
+    ['202', '/usr/bin/node'],
+    ['203', '/opt/factory-desktop-linux/resources/bin/droid'],
+  ]) {
+    await mkdir(path.join(root, pid));
+    await symlink(exe, path.join(root, pid, 'exe'));
+  }
+
+  const denied = new Map([['201', 'EACCES'], ['202', 'EPERM']]);
+  const readExecutable = async (linkPath) => {
+    const code = denied.get(path.basename(path.dirname(linkPath)));
+    if (code) throw Object.assign(new Error(`readlink denied: ${code}`), { code });
+    return readLink(linkPath);
+  };
+  assert.deepEqual(
+    await runningAppProcesses(root, process.getuid(), { readlink: readExecutable }),
+    ['203'],
+  );
+}));
+
+test('app guard reports unexpected executable-link errors', async () => temporary(async (root) => {
+  await mkdir(path.join(root, '301'));
+  await symlink('/usr/bin/node', path.join(root, '301', 'exe'));
+  const unexpected = Object.assign(new Error('readlink I/O failure'), { code: 'EIO' });
+  await assert.rejects(
+    runningAppProcesses(root, process.getuid(), { readlink: async () => { throw unexpected; } }),
+    (error) => error === unexpected,
+  );
+}));
+
+test('app guard does not treat permission errors outside executable-link reads as safe', async () => temporary(async (root) => {
+  await mkdir(path.join(root, '401'));
+  await symlink('/usr/bin/node', path.join(root, '401', 'exe'));
+  const denied = Object.assign(new Error('process metadata denied'), { code: 'EACCES' });
+  await assert.rejects(
+    runningAppProcesses(root, process.getuid(), { lstat: async () => { throw denied; } }),
+    (error) => error === denied,
+  );
 }));
 
 test('managed RPM validates checksum, package identity, and embedded build manifest', async () => temporary(async (root) => {

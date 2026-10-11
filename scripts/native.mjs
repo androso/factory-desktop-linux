@@ -78,25 +78,34 @@ export function compareVersions(a, b) {
   return Number(value);
 }
 
-export async function runningAppProcesses(procRoot = '/proc', uid = process.getuid()) {
+export async function runningAppProcesses(
+  procRoot = '/proc',
+  uid = process.getuid(),
+  { readdir: listProcesses = readdir, lstat: inspectProcess = lstat, readlink: readExecutable = readlink } = {},
+) {
   const found = [];
-  for (const entry of await readdir(procRoot, { withFileTypes: true })) {
+  for (const entry of await listProcesses(procRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     const directory = path.join(procRoot, entry.name);
+    let processUid;
     try {
-      if ((await lstat(directory)).uid !== uid) continue;
-      const executable = (await readlink(path.join(directory, 'exe'))).replace(/ \(deleted\)$/, '');
-      if (path.basename(executable) === 'factory-desktop' ||
-          executable.startsWith('/opt/factory-desktop-linux/')) found.push(entry.name);
+      processUid = (await inspectProcess(directory)).uid;
     } catch (error) {
       if (error.code === 'ENOENT' || error.code === 'ESRCH') continue;
-      if (error.code === 'EACCES') {
-        // Kernel threads have no executable, but an inaccessible user process
-        // must not be assumed safe for replacement.
-        fail(`Cannot inspect process ${entry.name}; refusing installation.`);
-      }
       throw error;
     }
+    if (processUid !== uid) continue;
+
+    let executable;
+    try {
+      executable = (await readExecutable(path.join(directory, 'exe'))).replace(/ \(deleted\)$/, '');
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ESRCH' ||
+          error.code === 'EACCES' || error.code === 'EPERM') continue;
+      throw error;
+    }
+    if (path.basename(executable) === 'factory-desktop' ||
+        executable.startsWith('/opt/factory-desktop-linux/')) found.push(entry.name);
   }
   return found;
 }
