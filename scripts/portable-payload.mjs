@@ -163,7 +163,7 @@ export async function readElfDetails(distribution) {
   };
 }
 
-export async function normalizePayloadDirectoryModes(payloadDirectory) {
+export async function normalizePayloadModes(payloadDirectory) {
   const directories = [payloadDirectory, ...await walkDirectories(payloadDirectory)];
   for (const directory of directories) {
     const details = await lstat(directory);
@@ -171,6 +171,14 @@ export async function normalizePayloadDirectoryModes(payloadDirectory) {
       fail(`Package payload directory has an unsafe type or mode: ${directory}`);
     }
     if ((details.mode & 0o7777) !== 0o755) await chmod(directory, 0o755);
+  }
+  for (const file of await walkFiles(payloadDirectory)) {
+    const details = await lstat(file);
+    if (!details.isFile() || (details.mode & 0o6000) !== 0) {
+      fail(`Package payload file has an unsafe type or mode: ${file}`);
+    }
+    const mode = (details.mode & 0o111) !== 0 ? 0o755 : 0o644;
+    if ((details.mode & 0o7777) !== mode) await chmod(file, mode);
   }
 }
 

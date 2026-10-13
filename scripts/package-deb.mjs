@@ -20,7 +20,7 @@ import { detectBuildHost } from './host.mjs';
 import {
   assertLocalBuildWorkspace,
   assertSafeOutputDirectory,
-  normalizePayloadDirectoryModes,
+  normalizePayloadModes,
   publishOutputs,
   readElfDetails,
   readPortableIcon,
@@ -96,7 +96,7 @@ async function createWorkspace(distribution, icon, { version, depends }) {
   if (await hashTreeWithModes(payloadDirectory) !== await hashTreeWithModes(distribution)) {
     fail('Workspace copy changed bundle contents, permissions, or binary hashes.');
   }
-  await normalizePayloadDirectoryModes(payloadDirectory);
+  await normalizePayloadModes(payloadDirectory);
   await chmod(path.join(payloadDirectory, 'chrome-sandbox'), 0o4755);
 
   const wrapperPath = path.join(rootDirectory, DEB_WRAPPER_PATH.slice(1));
@@ -115,6 +115,8 @@ async function createWorkspace(distribution, icon, { version, depends }) {
   await chmod(wrapperPath, 0o755);
   await writeFile(desktopPath, createDesktopEntry(), { flag: 'wx', mode: 0o644 });
   await writeFile(stagedIcon, icon.iconBytes, { flag: 'wx', mode: 0o644 });
+  await chmod(desktopPath, 0o644);
+  await chmod(stagedIcon, 0o644);
   await cp(NOTICE_PATH, copyrightPath, { errorOnExist: true });
   await chmod(copyrightPath, 0o644);
 
@@ -144,6 +146,8 @@ async function createWorkspace(distribution, icon, { version, depends }) {
     depends,
   }), { flag: 'wx', mode: 0o644 });
   await writeFile(path.join(controlDirectory, 'md5sums'), formatMd5sums(md5Entries), { flag: 'wx', mode: 0o644 });
+  await chmod(path.join(controlDirectory, 'control'), 0o644);
+  await chmod(path.join(controlDirectory, 'md5sums'), 0o644);
 
   return {
     workspace,
@@ -253,6 +257,10 @@ async function validateDebMetadata(debPath, expected) {
     const underBundle = entry.path === DEB_BUNDLE_ROOT || entry.path.startsWith(`${DEB_BUNDLE_ROOT}/`);
     if (underBundle && entry.type === 'd' && entry.mode !== 'drwxr-xr-x') {
       fail(`.deb application directories must be normal-user accessible and not group/world writable: ${entry.path} (${entry.mode}).`);
+    }
+    if (underBundle && entry.type === '-' && entry.path !== `${DEB_BUNDLE_ROOT}/chrome-sandbox` &&
+        !['-rw-r--r--', '-rwxr-xr-x'].includes(entry.mode)) {
+      fail(`.deb application files must be readable by normal users with mode 0644 or 0755: ${entry.path} (${entry.mode}).`);
     }
     if (entry.path === `${DEB_BUNDLE_ROOT}/chrome-sandbox`) {
       if (entry.type !== '-' || entry.mode !== '-rwsr-xr-x') {

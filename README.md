@@ -199,6 +199,28 @@ the RPM metadata, payload, and checksum checks. It has not been installed.
 The user confirmed the improved header appearance; theme switching and
 window-control behavior have not been fully exercised.
 
+### Sidebar "Add project" fix (current source)
+
+The sidebar's **Add project** action opens the directory picker, remembers the
+chosen path, navigates to the new-session page, and dispatches a one-shot
+`factory:new-session-directory-selection` event. The new-session composer only
+subscribes to that event in a mount-only effect, so when the event is
+dispatched before that page mounts — the normal case when the button is used
+while viewing a chat — no listener exists yet, the event is dropped, and the
+composer keeps the previously remembered project.
+
+Two exact-version patches fix the handoff without changing any other flow:
+
+- `linux-add-project-directory-pending` records the chosen directory on
+  `window.__factoryPendingProjectDirectory` immediately before dispatching the
+  event.
+- `linux-add-project-directory-mount-consumer` clears that record when the
+  event is delivered normally, and consumes it when the new-session composer
+  mounts, so an early dispatch is applied instead of lost.
+
+The recorded value is only used by this handoff and is cleared as soon as it is
+consumed, so a stale selection cannot leak into an unrelated new session.
+
 ## Inputs and safety
 
 The pinned installer URL and versions are in `versions.json`. `npm run acquire`

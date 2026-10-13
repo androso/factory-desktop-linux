@@ -165,12 +165,37 @@ test('version-specific patches require one exact source match', () => {
     'linux-hide-separate-menu-bar',
     'linux-application-menu-keyboard',
     'linux-integrated-header-preload',
+    'linux-add-project-directory-pending',
+    'linux-add-project-directory-mount-consumer',
   ]) {
     const item = patches.find((entry) => entry.id === id);
     assert.ok(item, `missing required patch ${id}`);
     const result = transformExact(item.before, item);
     assert.equal(result, item.after);
   }
+});
+
+test('add-project directory handoff survives an early dispatch', () => {
+  const pending = patches.find((entry) => entry.id === 'linux-add-project-directory-pending');
+  const consumer = patches.find((entry) => entry.id === 'linux-add-project-directory-mount-consumer');
+  assert.ok(pending && consumer);
+  assert.equal(pending.file, '.vite/renderer/main_window/assets/index-CxnMow3h.js');
+  assert.equal(consumer.file, pending.file);
+
+  const dispatcher = transformExact(pending.before, pending);
+  // The selection must be recorded before the event is dispatched.
+  assert.ok(
+    dispatcher.indexOf('window.__factoryPendingProjectDirectory=fr.path')
+      < dispatcher.indexOf('window.dispatchEvent(new CustomEvent(Wwt,{detail:fr.path}))'),
+  );
+
+  const listener = transformExact(consumer.before, consumer);
+  // A dispatch that lands after mount clears the record...
+  assert.match(listener, /window\.__factoryPendingProjectDirectory=void 0,fk\.current\(or\.detail\)/);
+  // ...and a record left by an early dispatch is consumed on mount.
+  assert.match(listener, /const or=window\.__factoryPendingProjectDirectory;or!==void 0&&\(window\.__factoryPendingProjectDirectory=void 0,fk\.current\(or\)\)/);
+  // The mount effect must still unsubscribe on unmount.
+  assert.match(listener, /return\(\)=>\{window\.removeEventListener\(Wwt,bn\)\}/);
 });
 
 test('extraction manifest paths point at the published tree, not temporary staging', () => {

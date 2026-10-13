@@ -28,7 +28,7 @@ import {
 import {
   assertLocalBuildWorkspace,
   assertSafeOutputDirectory,
-  normalizePayloadDirectoryModes,
+  normalizePayloadModes,
   publishOutputs,
   readElfDetails,
   readPortableIcon,
@@ -74,7 +74,7 @@ async function createWorkspace(distribution, icon) {
   if (await hashTreeWithModes(payloadDirectory) !== await hashTreeWithModes(distribution)) {
     fail('Workspace copy changed bundle contents, permissions, or binary hashes.');
   }
-  await normalizePayloadDirectoryModes(payloadDirectory);
+  await normalizePayloadModes(payloadDirectory);
 
   const wrapperPath = path.join(sources, RPM_PACKAGE_NAME);
   const desktopPath = path.join(sources, path.basename(RPM_DESKTOP_PATH));
@@ -222,6 +222,10 @@ async function validateRpmMetadata(
     if ((file === RPM_BUNDLE_ROOT || file.startsWith(`${RPM_BUNDLE_ROOT}/`)) &&
         mode.startsWith('d') && mode !== 'drwxr-xr-x') {
       fail(`RPM application directories must be accessible to normal users and not group/world-writable: ${file} (${mode}).`);
+    }
+    if (file.startsWith(`${RPM_BUNDLE_ROOT}/`) && mode.startsWith('-') &&
+        !['-rw-r--r--', '-rwxr-xr-x'].includes(mode)) {
+      fail(`RPM application files must be readable by normal users with mode 0644 or 0755: ${file} (${mode}).`);
     }
   }
   if (modeFor.get(RPM_WRAPPER_PATH) !== '-rwxr-xr-x' ||

@@ -123,6 +123,29 @@ export const patches = [
     after: 'window:{showApplicationMenu:(process.platform==="win32"||process.platform==="linux")?',
     reason: 'Enable the existing integrated renderer header, inline menus, drag regions, and overlay space reservation through its capability check.',
   },
+  // The sidebar "Add project" action navigates to the new-session route and
+  // immediately dispatches a one-shot selection event. The new-session
+  // composer only subscribes in a mount-only effect, so when the event is
+  // dispatched before that page mounts (the normal case when the user is
+  // viewing a chat), nothing receives it and the composer keeps the previously
+  // remembered project. Remember the selection before dispatching and let the
+  // composer consume it on mount so the handoff cannot be lost.
+  {
+    id: 'linux-add-project-directory-pending',
+    file: '.vite/renderer/main_window/assets/index-CxnMow3h.js',
+    factoryVersion: '0.194.0',
+    before: 'await Xn({to:zt.sessions.all}),window.dispatchEvent(new CustomEvent(Wwt,{detail:fr.path}))',
+    after: 'await Xn({to:zt.sessions.all}),window.__factoryPendingProjectDirectory=fr.path,window.dispatchEvent(new CustomEvent(Wwt,{detail:fr.path}))',
+    reason: 'Remember a sidebar directory selection before dispatching it, so it survives until the new-session composer mounts.',
+  },
+  {
+    id: 'linux-add-project-directory-mount-consumer',
+    file: '.vite/renderer/main_window/assets/index-CxnMow3h.js',
+    factoryVersion: '0.194.0',
+    before: 'dn(()=>{const bn=or=>{fk.current(or.detail)};return window.addEventListener(Wwt,bn),()=>{window.removeEventListener(Wwt,bn)}});',
+    after: 'dn(()=>{const bn=or=>{window.__factoryPendingProjectDirectory=void 0,fk.current(or.detail)};window.addEventListener(Wwt,bn);const or=window.__factoryPendingProjectDirectory;or!==void 0&&(window.__factoryPendingProjectDirectory=void 0,fk.current(or));return()=>{window.removeEventListener(Wwt,bn)}});',
+    reason: 'Consume a remembered directory selection when the new-session composer mounts, so Add project from the sidebar works after an early dispatch.',
+  },
 ];
 
 export function transformExact(content, patch) {

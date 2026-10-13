@@ -6,6 +6,29 @@ built and verified with Desktop 0.194.0, Droid CLI 0.238.0, and Electron
 42.11.12. Release 7 was not installed. Authenticated desktop/CLI compatibility
 is still unverified.
 
+## Sidebar "Add project" fix (current source, not end-to-end validated)
+
+- Diagnosed from the user's running app: the sidebar Add-project action
+  navigated to `/sessions` and immediately dispatched a one-shot
+  `factory:new-session-directory-selection` event, but the only listener is a
+  mount-only effect on the new-session composer. When the button was used from
+  a chat, the event fired before that page mounted, was dropped, and the
+  composer kept the previous project. The daemon logs showed the
+  `dialog:selectDirectory` request with no follow-up folder-trust or
+  working-directory RPC, consistent with the event never reaching a listener.
+- Added two exact-version patches (`linux-add-project-directory-pending`,
+  `linux-add-project-directory-mount-consumer`). Both applied to the pinned
+  extracted 0.194.0 bundle (`index-CxnMow3h.js`) with exactly one match each,
+  and every patched file passed `node --check`.
+- `npm run check` passed. `node --test tests/regression.test.mjs` passed all 15
+  tests, including a new assertion that the dispatcher records the selection
+  before dispatching and the composer consumes an unconsumed record on mount.
+  The full `npm test` run passed 62 of 63 tests, with the Fedora-only synthetic
+  RPM test skipped because `rpmbuild` is absent on this Ubuntu host.
+- Not validated: an interactive rebuild, an installed app reproducing the fixed
+  handoff, or any authenticated session. No distribution artifact was rebuilt
+  or installed for this change.
+
 ## Ubuntu `.deb` packaging and workflow (not validated end to end)
 
 - Added Ubuntu 24.04 or newer x86_64 `.deb` packaging (`npm run package:deb`,
