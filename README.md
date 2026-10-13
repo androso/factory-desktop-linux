@@ -6,6 +6,32 @@ pinned Linux Electron runtime. It is not built from Factory source, officially
 supported by Factory. Native updates are explicitly requested local rebuilds,
 not an upstream auto-updater.
 
+## Easy Ubuntu installation and updates
+
+On **Ubuntu 24.04 or newer x86_64**, clone this repository and run:
+
+```sh
+make bootstrap-native
+```
+
+This explicitly installs build prerequisites through `sudo apt-get`, then
+builds, tests, verifies, packages a `.deb`, and installs it with `apt`. Run it
+as your normal user, not with `sudo make`. If Node.js and the build
+prerequisites are already installed, use `make install-native`. You can also use
+`npm run bootstrap:native` and `npm run install:native`.
+
+For the very first checkout, if `git` or `make` is missing, install them with
+`sudo apt-get install git make` before cloning/building.
+
+The managed workflow mirrors Fedora: it builds and verifies a fresh,
+source-fingerprinted workspace under `build/native/workspaces/`, reuses a
+matching verified `.deb` on repeat installation, and journals ready, installed,
+previous, and pending transactions in `build/native/state.json`. Only the
+`apt-get`/`dpkg` step runs with privileges. `make update-native`, `make status`,
+`make rollback`, and `make recover` behave exactly as the Fedora workflow, using
+`apt-get` and `dpkg` in place of `dnf` and `rpm`. To build the `.deb` without
+installing it, run `make deb` or `npm run package:deb`.
+
 ## Easy Fedora installation and updates
 
 On **Fedora 44 x86_64**, clone this repository and run:
@@ -50,7 +76,8 @@ Other commands:
 
 ```sh
 make build-app       # Build and verify a portable app, without installing
-make rpm             # Build and verify an RPM, without installing
+make deb             # Build and verify a .deb, without installing (Ubuntu)
+make rpm             # Build and verify an RPM, without installing (Fedora)
 make status          # Show exact managed artifacts and the installed RPM
 make rollback        # Install the immediately previous managed RPM
 make recover         # Reconcile an interrupted or cancelled installation
@@ -86,6 +113,20 @@ x64 bundle has been assembled with the pinned Electron 42.11.12 runtime, the
 official Droid CLI, and a Linux keytar module. The current source pins CLI
 0.238.0 independently of Desktop 0.194.0. Automated
 verification passes, including loading keytar under Electron.
+
+### Ubuntu `.deb` support (this branch)
+
+This branch adds Ubuntu `.deb` packaging plus the matching managed workflow
+(`make deb`, `make install-native`, `make update-native`, `make rollback`,
+`make recover`) on Ubuntu 24.04 or newer x86_64. Debian packaging reuses the
+same verified portable bundle and verification-report gate as the RPM path, and
+the native workflow selects `apt-get`/`dpkg` on Ubuntu and `dnf`/`rpm` on
+Fedora automatically. The Debian layout, control file, dependency resolution,
+`md5sums`, and payload validation are covered by unit tests and a synthetic
+`dpkg-deb` build that passed on Ubuntu 26.04 x86_64; the full test suite passed
+with the Fedora-only synthetic RPM test skipped because `rpmbuild` is absent.
+A full end-to-end `npm run package:deb` against the real Factory bundle, a real
+`apt-get install`, and a real `.deb` rollback were not exercised here.
 
 ### CLI upgrade (RPM release 7)
 
@@ -158,6 +199,28 @@ the RPM metadata, payload, and checksum checks. It has not been installed.
 The user confirmed the improved header appearance; theme switching and
 window-control behavior have not been fully exercised.
 
+### Sidebar "Add project" fix (current source)
+
+The sidebar's **Add project** action opens the directory picker, remembers the
+chosen path, navigates to the new-session page, and dispatches a one-shot
+`factory:new-session-directory-selection` event. The new-session composer only
+subscribes to that event in a mount-only effect, so when the event is
+dispatched before that page mounts — the normal case when the button is used
+while viewing a chat — no listener exists yet, the event is dropped, and the
+composer keeps the previously remembered project.
+
+Two exact-version patches fix the handoff without changing any other flow:
+
+- `linux-add-project-directory-pending` records the chosen directory on
+  `window.__factoryPendingProjectDirectory` immediately before dispatching the
+  event.
+- `linux-add-project-directory-mount-consumer` clears that record when the
+  event is delivered normally, and consumes it when the new-session composer
+  mounts, so an early dispatch is applied instead of lost.
+
+The recorded value is only used by this handoff and is cleared as soon as it is
+consumed, so a stale selection cannot leak into an unrelated new session.
+
 ## Inputs and safety
 
 The pinned installer URL and versions are in `versions.json`. `npm run acquire`
@@ -183,14 +246,18 @@ SHA-256 in the pinned Electron package before extraction.
 
 ## Build prerequisites and commands
 
-The supported build hosts are **Ubuntu 24.04 x86_64** and **Fedora 44
+The supported build hosts are **Ubuntu 24.04 or newer x86_64** and **Fedora 44
 x86_64**. The portable build remains available on both. Fedora 44 is the only
 supported RPM packaging host, and the RPM is not claimed to work on other
-RPM distributions or to be officially supported by Factory.
+RPM distributions. Ubuntu 24.04 or newer x86_64 is the supported `.deb`
+packaging host, and the `.deb` is not claimed to work on other Debian-based
+distributions or to be officially supported by Factory.
 
 The native keytar rebuild requires `libsecret-1-dev` on Ubuntu or
-`libsecret-devel` on Fedora. Fedora RPM packaging also uses `rpmbuild`, `rpm`,
-`rpm2cpio`, `cpio`, `readelf`, `ldd`, and `desktop-file-validate`.
+`libsecret-devel` on Fedora. Ubuntu `.deb` packaging uses `dpkg-deb`, `dpkg`,
+`dpkg-query`, `readelf`, `ldd`, and `desktop-file-validate`. Fedora RPM
+packaging also uses `rpmbuild`, `rpm`, `rpm2cpio`, `cpio`, `readelf`, `ldd`, and
+`desktop-file-validate`.
 `npm run preflight` reports missing compilers, libraries, and packaging tools,
 and prints any privileged package command for separate approval. No system
 packages are installed automatically.
@@ -216,6 +283,13 @@ On Fedora 44, after the portable bundle is freshly verified, build the RPM:
 npm run package:rpm
 ```
 
+On Ubuntu 24.04 or newer, after the portable bundle is freshly verified, build
+the Debian package:
+
+```sh
+npm run package:deb
+```
+
 If using a named distribution directory, verify and package that same
 directory, for example:
 
@@ -235,12 +309,45 @@ dist/rpm/factory-desktop-linux-0.194.0-7.fc44.x86_64.rpm
 dist/rpm/factory-desktop-linux-0.194.0-7.fc44.x86_64.rpm.sha256
 ```
 
+Debian packaging uses the same verification-report gate, builds under a new
+workspace-local `build/.deb-workspace-*` directory, preserves existing outputs,
+and refuses to overwrite either output file. Its artifact and SHA-256 sidecar
+are:
+
+```text
+dist/deb/factory-desktop-linux_0.194.0-7_amd64.deb
+dist/deb/factory-desktop-linux_0.194.0-7_amd64.deb.sha256
+```
+
 The RPM installs the bundle under `/opt/factory-desktop-linux`, a forwarding
 command at `/usr/bin/factory-desktop-linux`, a menu entry, an icon, and a
 proprietary/unofficial personal-use notice. It does not set a callback MIME
 handler, run the application during installation, change global Droid
 configuration, or remove user data during uninstall. The RPM is not to be
 published. Building it does not install it on the build host.
+
+The `.deb` installs the same bundle and layout under
+`/opt/factory-desktop-linux`, a forwarding command at
+`/usr/bin/factory-desktop-linux`, a menu entry, an icon, and the
+proprietary/unofficial personal-use notice at
+`/usr/share/doc/factory-desktop-linux/copyright`. Both formats install the menu
+entry as `/usr/share/applications/factory.desktop` and the bundled icon as the
+real Factory artwork at
+`/usr/share/icons/hicolor/256x256/apps/factory-desktop-linux.png`. The entry
+name matches the application id the app reports on Wayland, so GNOME binds the
+running window to the entry instead of showing a generic icon. The `.deb` adds
+no maintainer scripts, so it does not run the application, register a callback
+MIME handler, change global Droid configuration, or remove user data during
+uninstall. Its `Depends` list is derived from the bundle's external shared
+libraries (`readelf`/`ldd` plus `dpkg -S`), and `libsecret-1-0` is always
+required for the unpacked keytar module. The `.deb` is not to be published.
+Building it does not install it on the build host.
+
+The isolated Electron sandbox smoke check runs only when `unshare`,
+`dbus-run-session`, `xvfb-run`, and `xauth` are available. Environments that
+forbid user namespaces can explicitly skip this non-authenticated check with
+`FACTORY_SKIP_SANDBOX_SMOKE=1`; the report then shows the check as skipped
+rather than passing.
 
 RPM release 2 makes the installed bundle directories readable and searchable
 by normal users. It also fixes callback registration when the application has
@@ -256,14 +363,23 @@ preserving Alt/F10 menu access and matching control height to app zoom.
 Release 7 retains that header and upgrades the independently pinned CLI
 from 0.194.0 to 0.238.0.
 
-Electron's sandbox remains enabled. The `chrome-sandbox` helper is installed
-without setuid/setgid permissions, so the normal user-namespace sandbox must
-work. Preflight only probes user-namespace availability; it is not proof that
-Electron starts successfully. RPM packaging runs a non-authenticated,
-network-isolated startup check when `unshare`, `dbus-run-session`, `xvfb-run`,
-and `xauth` are available. If those tools are absent, the smoke check is
-reported as skipped. Login, callback delivery, and interactive Wayland
-behavior remain unverified unless separately exercised.
+The launcher keeps Chromium sandboxing enabled. Ubuntu `.deb` packages install
+only Electron's `chrome-sandbox` helper as root:root with mode 4755, allowing
+startup when Ubuntu restricts unprivileged user namespaces. The portable bundle
+and Fedora RPM retain mode 0755 and require usable user namespaces. No global
+AppArmor policy is changed. Preflight only probes user-namespace availability;
+it is not proof that Electron starts successfully. Packaging
+runs a non-authenticated, network-isolated startup check when `unshare`,
+`dbus-run-session`, `xvfb-run`, and `xauth` are available. If those tools are
+absent, the smoke check is reported as skipped. The launcher links the user's
+normal and desktop-specific `mimeapps.list` files into its isolated config home
+and preserves access to user-installed desktop entries, so sign-in uses the
+selected browser. Normal launches use the CLI's Factory home (including an
+explicit `FACTORY_HOME_OVERRIDE`) and existing keyring credentials; Electron's
+profile and logs remain separate. Desktop and CLI now share login, logout,
+settings, and sessions. `launch-test.sh` still uses disposable credentials. Login,
+callback delivery, and interactive Wayland behavior remain unverified unless
+separately exercised.
 
 After the RPM is built, these are the manual host-installation commands. They
 are provided for a separate, explicit approval and are not run by the build:
@@ -272,6 +388,14 @@ are provided for a separate, explicit approval and are not run by the build:
 sudo dnf install ./dist/rpm/factory-desktop-linux-0.194.0-7.fc44.x86_64.rpm
 factory-desktop-linux
 sudo dnf remove factory-desktop-linux
+```
+
+On Ubuntu, the equivalent manual `.deb` commands are:
+
+```sh
+sudo apt-get install ./dist/deb/factory-desktop-linux_0.194.0-7_amd64.deb
+factory-desktop-linux
+sudo apt-get remove factory-desktop-linux
 ```
 
 The daemon smoke test uses an isolated HOME and local loopback only. It checks

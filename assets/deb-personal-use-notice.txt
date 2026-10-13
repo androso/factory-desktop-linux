@@ -1,0 +1,7 @@
+Factory Desktop Linux personal-use Debian package
+
+This is an unofficial personal-use port. It is not produced, reviewed, endorsed, or supported by Factory.
+
+The Debian package redistributes proprietary Factory Desktop application materials and the official Factory Droid CLI solely for the personal-use purpose described by this project. No ownership, trademark, publication, redistribution, or commercial-use rights are granted by this notice. Observe the applicable rights and terms of the respective owners. Do not publish or redistribute this Debian package.
+
+This port is not an official Factory release. Automatic updates are disabled.

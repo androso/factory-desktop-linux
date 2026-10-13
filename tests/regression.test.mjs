@@ -165,12 +165,37 @@ test('version-specific patches require one exact source match', () => {
     'linux-hide-separate-menu-bar',
     'linux-application-menu-keyboard',
     'linux-integrated-header-preload',
+    'linux-add-project-directory-pending',
+    'linux-add-project-directory-mount-consumer',
   ]) {
     const item = patches.find((entry) => entry.id === id);
     assert.ok(item, `missing required patch ${id}`);
     const result = transformExact(item.before, item);
     assert.equal(result, item.after);
   }
+});
+
+test('add-project directory handoff survives an early dispatch', () => {
+  const pending = patches.find((entry) => entry.id === 'linux-add-project-directory-pending');
+  const consumer = patches.find((entry) => entry.id === 'linux-add-project-directory-mount-consumer');
+  assert.ok(pending && consumer);
+  assert.equal(pending.file, '.vite/renderer/main_window/assets/index-CxnMow3h.js');
+  assert.equal(consumer.file, pending.file);
+
+  const dispatcher = transformExact(pending.before, pending);
+  // The selection must be recorded before the event is dispatched.
+  assert.ok(
+    dispatcher.indexOf('window.__factoryPendingProjectDirectory=fr.path')
+      < dispatcher.indexOf('window.dispatchEvent(new CustomEvent(Wwt,{detail:fr.path}))'),
+  );
+
+  const listener = transformExact(consumer.before, consumer);
+  // A dispatch that lands after mount clears the record...
+  assert.match(listener, /window\.__factoryPendingProjectDirectory=void 0,fk\.current\(or\.detail\)/);
+  // ...and a record left by an early dispatch is consumed on mount.
+  assert.match(listener, /const or=window\.__factoryPendingProjectDirectory;or!==void 0&&\(window\.__factoryPendingProjectDirectory=void 0,fk\.current\(or\)\)/);
+  // The mount effect must still unsubscribe on unmount.
+  assert.match(listener, /return\(\)=>\{window\.removeEventListener\(Wwt,bn\)\}/);
 });
 
 test('extraction manifest paths point at the published tree, not temporary staging', () => {
@@ -348,8 +373,8 @@ def lookup():
                 if key.strip() == mime: return value.strip().split(';')[0]
     return ''
 if cmd == 'query' and args[0] == 'default':
-    print(lookup() or ('factory-desktop-linux.desktop'
-        if (data / 'applications' / 'factory-desktop-linux.desktop').exists() else ''))
+    print(lookup() or ('factory.desktop'
+        if (data / 'applications' / 'factory.desktop').exists() else ''))
 elif cmd == 'default':
     app, mime = args
     for file in paths:
@@ -391,7 +416,7 @@ test('desktop entry safely quotes paths and forwards %u', async () => {
       encoding: 'utf8',
     });
     assert.equal(integration.status, 0, integration.stderr);
-    const entry = await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop'), 'utf8');
+    const entry = await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop'), 'utf8');
     assert.match(entry, /^Name=Factory Desktop Linux$/m);
     assert.match(entry, /^Exec="[^"\n]*portable app[^"\n]*" %u$/m);
     assert.match(entry, /^Icon=[^\n]*portable app[^\n]*\/resources\/factory-desktop\.png$/m);
@@ -425,7 +450,7 @@ test('desktop integration preserves existing app state and remains reversible', 
         env: fixture.env,
         encoding: 'utf8',
       }).stdout.trim(),
-      'factory-desktop-linux.desktop',
+      'factory.desktop',
     );
 
     const rollback = spawnSync(installer[0], [...installer.slice(1), 'rollback'], {
@@ -459,7 +484,7 @@ test('desktop handler replacement requires interactive approval', async () => {
     assert.match(result.stderr, /No interactive approval/);
     assert.equal(await readFile(file, 'utf8'), '[Default Applications]\nx-scheme-handler/factory-test=existing.desktop;\n');
     await assert.rejects(
-      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop')),
+      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop')),
       { code: 'ENOENT' },
     );
   } finally {
@@ -482,7 +507,7 @@ test('desktop rollback restores all active MIME files and refuses intervening ch
       path.join(fixture.env.XDG_DATA_HOME, 'applications', 'kde-mimeapps.list'),
     ];
     for (const activeFile of activeFiles) {
-      assert.match(await readFile(activeFile, 'utf8'), /factory-desktop-linux\.desktop/);
+      assert.match(await readFile(activeFile, 'utf8'), /factory\.desktop/);
     }
     const association = path.join(fixture.env.XDG_STATE_HOME, 'factory-desktop-linux/protocol-association/association.json');
     const metadata = JSON.parse(await readFile(association, 'utf8'));
@@ -493,7 +518,7 @@ test('desktop rollback restores all active MIME files and refuses intervening ch
     const refused = spawnSync(installer[0], [...installer.slice(1), 'rollback'], { env: fixture.env, encoding: 'utf8' });
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /changed after installation/);
-    assert.ok((await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop'), 'utf8'))
+    assert.ok((await readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop'), 'utf8'))
       .includes('Factory Desktop'));
 
     await writeFile(changedFile, Buffer.from(metadata.after[changedFile].content, 'base64'));
@@ -503,7 +528,7 @@ test('desktop rollback restores all active MIME files and refuses intervening ch
       await assert.rejects(() => readFile(activeFile), { code: 'ENOENT' });
     }
     await assert.rejects(
-      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory-desktop-linux.desktop')),
+      () => readFile(path.join(fixture.env.XDG_DATA_HOME, 'applications', 'factory.desktop')),
       { code: 'ENOENT' },
     );
   } finally {

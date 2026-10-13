@@ -3,7 +3,8 @@ import { cp, lstat, mkdir, open, readFile, readdir, readlink, rename } from 'nod
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { ROOT, exists, fail, hashTreeWithModes, readJson, sha256File } from './lib.mjs';
-import { RPM_PACKAGE_NAME } from './rpm.mjs';
+import { RPM_BUNDLE_ROOT, RPM_PACKAGE_NAME } from './rpm.mjs';
+import { DEB_ARCHITECTURE, DEB_BUNDLE_ROOT, DEB_PACKAGE_NAME } from './deb.mjs';
 
 export const SOURCE_INPUTS = [
   'package.json', 'package-lock.json', 'versions.json', 'Makefile',
@@ -61,6 +62,35 @@ export function installedIdentity() {
   return parseIdentity(result.stdout);
 }
 
+export function parseDebIdentity(text) {
+  const fields = text.trim().split('\t');
+  if (fields.length !== 3 || fields[0] !== DEB_PACKAGE_NAME ||
+      !/^\d+\.\d+\.\d+-[A-Za-z0-9.+~]+$/.test(fields[1]) || fields[2] !== DEB_ARCHITECTURE) {
+    fail('Unexpected Debian package name, version/revision, or architecture.');
+  }
+  return { name: fields[0], version: fields[1], architecture: fields[2] };
+}
+
+export function debPackageIdentity(file, run = execute) {
+  // dpkg-deb prints "Field: value" lines when several fields are requested, so
+  // query each field separately to get bare values.
+  const fields = ['Package', 'Version', 'Architecture'].map((field) =>
+    run('dpkg-deb', ['-f', file, field], { capture: true }).trim());
+  return parseDebIdentity(fields.join('\t'));
+}
+
+export function installedDebIdentity() {
+  const result = spawnSync('dpkg-query', [
+    '-W', '-f=${Package}\\t${Version}\\t${Architecture}\\n', DEB_PACKAGE_NAME,
+  ], { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.status !== 0 || !result.stdout.trim()) {
+    if (result.status === 1) return null;
+    fail(`Cannot query installed .deb: ${result.stderr || result.stdout}`);
+  }
+  return parseDebIdentity(result.stdout);
+}
+
 export function installOperation(candidate, current, compare) {
   if (!current) return 'install';
   const order = compare(candidate.version, current.version);
@@ -78,10 +108,119 @@ export function compareVersions(a, b) {
   return Number(value);
 }
 
+export function compareDebVersions(a, b) {
+  parseDebIdentity(`${DEB_PACKAGE_NAME}\t${a}\t${DEB_ARCHITECTURE}`);
+  parseDebIdentity(`${DEB_PACKAGE_NAME}\t${b}\t${DEB_ARCHITECTURE}`);
+  const probe = (operator) => {
+    const result = spawnSync('dpkg', ['--compare-versions', a, operator, b], { encoding: 'utf8' });
+    if (result.error) throw result.error;
+    return result.status;
+  };
+  if (probe('eq') === 0) return 0;
+  if (probe('lt') === 0) return -1;
+  if (probe('gt') === 0) return 1;
+  fail('Debian version comparison failed.');
+}
+
+function rpmArtifactManifestSha256(file, run) {
+  const manifestPath = path.join(RPM_BUNDLE_ROOT, 'build-manifest.json');
+  const dump = run('rpm', ['-qp', '--dump', file], { capture: true })
+    .split('\n').find((line) => line.startsWith(`${manifestPath} `));
+  return dump?.split(/\s+/)[3] ?? null;
+}
+
+function debArtifactManifestSha256(file) {
+  // Stream the data archive through tar and capture only the small manifest,
+  // instead of buffering the whole (uncompressed) payload tar in memory.
+  const member = `./${DEB_BUNDLE_ROOT.replace(/^\//, '')}/build-manifest.json`;
+  const extracted = spawnSync('sh', [
+    '-c', 'dpkg-deb --fsys-tarfile "$1" | tar -xO -- "$2"', 'sh', file, member,
+  ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 120_000 });
+  if (extracted.error) throw extracted.error;
+  if (extracted.status !== 0 || !extracted.stdout) {
+    fail('Cannot extract the build manifest from the .deb.');
+  }
+  return createHash('sha256').update(extracted.stdout).digest('hex');
+}
+
+export const rpmBackend = {
+  id: 'rpm',
+  packageName: RPM_PACKAGE_NAME,
+  bundleRoot: RPM_BUNDLE_ROOT,
+  artifactDirectory: 'rpm',
+  artifactExtension: '.rpm',
+  packageScript: 'package:rpm',
+  installLabel: 'sudo dnf install',
+  identityOf(file, run) { return packageIdentity(file, run); },
+  installedIdentity() { return installedIdentity(); },
+  compare(a, b) { return compareVersions(a, b); },
+  manifestSha256FromArtifact(file, run) { return rpmArtifactManifestSha256(file, run); },
+  verifyInstalled(run) { run('rpm', ['-V', RPM_PACKAGE_NAME], { capture: true }); },
+  installCommand(operation, file) { return ['sudo', ['dnf', operation, '-y', file]]; },
+};
+
+export const debBackend = {
+  id: 'deb',
+  packageName: DEB_PACKAGE_NAME,
+  bundleRoot: DEB_BUNDLE_ROOT,
+  artifactDirectory: 'deb',
+  artifactExtension: '.deb',
+  packageScript: 'package:deb',
+  installLabel: 'sudo apt-get install',
+  identityOf(file, run) { return debPackageIdentity(file, run); },
+  installedIdentity() { return installedDebIdentity(); },
+  compare(a, b) { return compareDebVersions(a, b); },
+  manifestSha256FromArtifact(file) { return debArtifactManifestSha256(file); },
+  verifyInstalled(run) { run('dpkg', ['--verify', DEB_PACKAGE_NAME], { capture: true }); },
+  installCommand(operation, file) {
+    const extra = operation === 'reinstall'
+      ? ['--reinstall']
+      : operation === 'downgrade' ? ['--allow-downgrades'] : [];
+    return ['sudo', ['apt-get', 'install', '-y', ...extra, file]];
+  },
+};
+
+export function backendForHost(host) {
+  if (host?.profile?.rpmPackaging) return rpmBackend;
+  if (host?.profile?.debPackaging) return debBackend;
+  return null;
+}
+
+async function processExecutable(
+  directory,
+  { readExecutable = readlink, readCommandLine = readFile } = {},
+) {
+  try {
+    return (await readExecutable(path.join(directory, 'exe'))).replace(/ \(deleted\)$/, '');
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return null;
+    // Sandboxed helpers (a snap-confined agent, for example) keep their
+    // executable unreadable. Fall back to the command line, which stays
+    // readable for the same user, instead of ignoring a process that may
+    // well be the app we are about to replace.
+    if (error.code !== 'EACCES' && error.code !== 'EPERM' && error.code !== 'EINVAL') throw error;
+  }
+  let commandLine;
+  try {
+    commandLine = await readCommandLine(path.join(directory, 'cmdline'));
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH' ||
+        error.code === 'EACCES' || error.code === 'EPERM') return null;
+    throw error;
+  }
+  const [command] = commandLine.toString('utf8').split('\0').filter(Boolean);
+  return command ?? null;
+}
+
 export async function runningAppProcesses(
   procRoot = '/proc',
   uid = process.getuid(),
-  { readdir: listProcesses = readdir, lstat: inspectProcess = lstat, readlink: readExecutable = readlink } = {},
+  {
+    readdir: listProcesses = readdir,
+    lstat: inspectProcess = lstat,
+    readlink: readExecutable = readlink,
+    readFile: readCommandLine = readFile,
+  } = {},
 ) {
   const found = [];
   for (const entry of await listProcesses(procRoot, { withFileTypes: true })) {
@@ -98,12 +237,12 @@ export async function runningAppProcesses(
 
     let executable;
     try {
-      executable = (await readExecutable(path.join(directory, 'exe'))).replace(/ \(deleted\)$/, '');
+      executable = await processExecutable(directory, { readExecutable, readCommandLine });
     } catch (error) {
-      if (error.code === 'ENOENT' || error.code === 'ESRCH' ||
-          error.code === 'EACCES' || error.code === 'EPERM') continue;
+      if (error.code === 'ENOENT' || error.code === 'ESRCH') continue;
       throw error;
     }
+    if (!executable) continue;
     if (path.basename(executable) === 'factory-desktop' ||
         executable.startsWith('/opt/factory-desktop-linux/')) found.push(entry.name);
   }
@@ -128,15 +267,20 @@ export function finishTransaction(state) {
 
 export class NativeWorkflow {
   constructor(root = ROOT, run = execute, {
-    currentIdentity = installedIdentity, compare = compareVersions, appClosed = assertAppClosed,
+    currentIdentity, compare, appClosed = assertAppClosed, backend = rpmBackend,
   } = {}) {
     this.root = root;
     this.run = run;
+    this.backend = backend;
     this.directory = path.join(root, 'build', 'native');
     this.statePath = path.join(this.directory, 'state.json');
-    this.currentIdentity = currentIdentity;
-    this.compare = compare;
+    this.currentIdentity = currentIdentity ?? (() => this.backend.installedIdentity());
+    this.compare = compare ?? ((a, b) => this.backend.compare(a, b));
     this.appClosed = appClosed;
+  }
+
+  artifactPath(artifact) {
+    return artifact?.packagePath ?? artifact?.rpmPath;
   }
 
   async readState() {
@@ -162,15 +306,15 @@ export class NativeWorkflow {
   }
 
   async checkArtifact(artifact) {
-    const relative = path.relative(this.directory, artifact?.rpmPath ?? '');
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) fail('RPM is outside the managed workspace.');
+    const packagePath = this.artifactPath(artifact);
+    const relative = path.relative(this.directory, packagePath ?? '');
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) fail('Package is outside the managed workspace.');
     if (!/^[a-f0-9]{64}$/.test(artifact.sha256 ?? '') ||
-        await sha256File(artifact.rpmPath) !== artifact.sha256) fail('Managed RPM checksum mismatch.');
-    const identity = packageIdentity(artifact.rpmPath, this.run);
-    if (JSON.stringify(identity) !== JSON.stringify(artifact.identity)) fail('Managed RPM identity mismatch.');
-    const manifestDump = this.run('rpm', ['-qp', '--dump', artifact.rpmPath], { capture: true })
-      .split('\n').find((line) => line.startsWith('/opt/factory-desktop-linux/build-manifest.json '));
-    if (manifestDump?.split(/\s+/)[3] !== artifact.manifestSha256) fail('RPM build manifest checksum mismatch.');
+        await sha256File(packagePath) !== artifact.sha256) fail('Managed package checksum mismatch.');
+    const identity = await this.backend.identityOf(packagePath, this.run);
+    if (JSON.stringify(identity) !== JSON.stringify(artifact.identity)) fail('Managed package identity mismatch.');
+    const manifestSha256 = await this.backend.manifestSha256FromArtifact(packagePath, this.run);
+    if (manifestSha256 !== artifact.manifestSha256) fail('Managed package build manifest checksum mismatch.');
     return artifact;
   }
 
@@ -178,18 +322,18 @@ export class NativeWorkflow {
     if (!artifact) return false;
     const current = this.currentIdentity();
     if (!current || JSON.stringify(current) !== JSON.stringify(artifact.identity)) return false;
-    if (await sha256File('/opt/factory-desktop-linux/build-manifest.json').catch(() => null) !== artifact.manifestSha256) return false;
-    this.run('rpm', ['-V', RPM_PACKAGE_NAME], { capture: true });
+    if (await sha256File(path.join(this.backend.bundleRoot, 'build-manifest.json')).catch(() => null) !== artifact.manifestSha256) return false;
+    this.backend.verifyInstalled(this.run);
     return true;
   }
 
-  async build({ packageRpm = false } = {}) {
+  async build({ packageArtifact = false } = {}) {
     let state = await this.readState();
     if (state.pending) fail('An installation needs recovery. Run make recover first.');
     const fingerprint = await sourceFingerprint(this.root);
     if (state.ready?.sourceSha256 === fingerprint) {
       await this.checkArtifact(state.ready);
-      console.log(`Reusing verified RPM: ${state.ready.rpmPath}`);
+      console.log(`Reusing verified ${this.backend.id} package: ${this.artifactPath(state.ready)}`);
       return state.ready;
     }
     let workspace = state.portable?.sourceSha256 === fingerprint ? state.portable.workspace : null;
@@ -204,28 +348,28 @@ export class NativeWorkflow {
       state = { ...state, portable: { sourceSha256: fingerprint, workspace } };
       await this.saveState(state);
     }
-    if (!packageRpm) {
+    if (!packageArtifact) {
       console.log(`Verified portable app: ${path.join(workspace, 'dist', 'factory-desktop-linux-native')}`);
       return null;
     }
-    const rpmDirectory = path.join(workspace, 'dist', 'rpm');
-    if (!await exists(rpmDirectory)) this.run('npm', ['run', 'package:rpm'], { cwd: workspace });
-    const artifacts = (await readdir(rpmDirectory)).filter((file) => file.endsWith('.rpm'));
-    if (artifacts.length !== 1) fail('Expected exactly one verified RPM.');
-    const rpmPath = path.join(rpmDirectory, artifacts[0]);
-    const sha256 = await sha256File(rpmPath);
-    const checksum = await readFile(`${rpmPath}.sha256`, 'utf8');
-    if (checksum.trim() !== `${sha256}  ${path.basename(rpmPath)}`) fail('RPM sidecar checksum mismatch.');
+    const artifactDirectory = path.join(workspace, 'dist', this.backend.artifactDirectory);
+    if (!await exists(artifactDirectory)) this.run('npm', ['run', this.backend.packageScript], { cwd: workspace });
+    const artifacts = (await readdir(artifactDirectory)).filter((file) => file.endsWith(this.backend.artifactExtension));
+    if (artifacts.length !== 1) fail('Expected exactly one verified package artifact.');
+    const packagePath = path.join(artifactDirectory, artifacts[0]);
+    const sha256 = await sha256File(packagePath);
+    const checksum = await readFile(`${packagePath}.sha256`, 'utf8');
+    if (checksum.trim() !== `${sha256}  ${path.basename(packagePath)}`) fail('Package sidecar checksum mismatch.');
     const artifact = {
-      sourceSha256: fingerprint, rpmPath, sha256,
-      identity: packageIdentity(rpmPath, this.run),
+      sourceSha256: fingerprint, packagePath, sha256,
+      identity: await this.backend.identityOf(packagePath, this.run),
       manifestSha256: await sha256File(path.join(workspace, 'dist', 'factory-desktop-linux-native', 'build-manifest.json')),
       builtAt: new Date().toISOString(),
     };
     await this.checkArtifact(artifact);
     state = { ...state, ready: artifact };
     await this.saveState(state);
-    console.log(`Ready: ${rpmPath}`);
+    console.log(`Ready: ${packagePath}`);
     return artifact;
   }
 
@@ -262,7 +406,7 @@ export class NativeWorkflow {
     const state = await this.readState();
     if (state.pending) fail('An installation needs recovery. Run make recover first.');
     const target = rollback ? state.previous : state.ready;
-    if (!target) fail(rollback ? 'No previous managed RPM is available.' : 'Run make rpm first.');
+    if (!target) fail(rollback ? 'No previous managed package is available.' : 'Run make rpm or make deb first.');
     await this.checkArtifact(target);
     if (!rollback && state.blocked === target.sha256) fail('This candidate was rolled back. Change the source before updating again.');
     if (await this.matchesInstalled(target)) {
@@ -277,8 +421,8 @@ export class NativeWorkflow {
     const current = this.currentIdentity();
     const operation = installOperation(target.identity, current, this.compare);
     const baselineManifestSha256 = current
-      ? await sha256File('/opt/factory-desktop-linux/build-manifest.json') : null;
-    if (current) this.run('rpm', ['-V', RPM_PACKAGE_NAME], { capture: true });
+      ? await sha256File(path.join(this.backend.bundleRoot, 'build-manifest.json')) : null;
+    if (current) this.backend.verifyInstalled(this.run);
     const pending = {
       ...state,
       pending: {
@@ -288,8 +432,10 @@ export class NativeWorkflow {
       },
     };
     await this.saveState(pending);
-    console.log(`Installing through sudo dnf ${operation}. If interrupted, run make recover.`);
-    this.run('sudo', ['dnf', operation, '-y', target.rpmPath], { cwd: this.root });
+    const packagePath = this.artifactPath(target);
+    console.log(`Installing through ${this.backend.installLabel} ${operation}. If interrupted, run make recover.`);
+    const [command, args] = this.backend.installCommand(operation, packagePath);
+    this.run(command, args, { cwd: this.root });
     if (!await this.matchesInstalled(target)) fail('Installed package verification failed. Run make recover.');
     await this.saveState(finishTransaction(pending));
     console.log('Installation verified. User data and callback registration were left unchanged.');
@@ -308,7 +454,7 @@ export class NativeWorkflow {
       await this.saveState({ ...state, pending: null });
       console.log('Package unchanged. You can retry installation.');
     } else {
-      fail('Package state is ambiguous. Inspect dnf history and rpm -V factory-desktop-linux before repairing it. Artifacts were preserved.');
+      fail(`Package state is ambiguous. Inspect the ${this.backend.id} history and verification before repairing it. Artifacts were preserved.`);
     }
   }
 
@@ -316,8 +462,8 @@ export class NativeWorkflow {
     const current = this.currentIdentity();
     if (!current && !pending.baseline) return true;
     if (!current || JSON.stringify(current) !== JSON.stringify(pending.baseline)) return false;
-    if (await sha256File('/opt/factory-desktop-linux/build-manifest.json').catch(() => null) !== pending.baselineManifestSha256) return false;
-    this.run('rpm', ['-V', RPM_PACKAGE_NAME], { capture: true });
+    if (await sha256File(path.join(this.backend.bundleRoot, 'build-manifest.json')).catch(() => null) !== pending.baselineManifestSha256) return false;
+    this.backend.verifyInstalled(this.run);
     return true;
   }
 

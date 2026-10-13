@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-APP_ID = "factory-desktop-linux.desktop"
+APP_ID = "factory.desktop"
 APP_NAME = "Factory Desktop Linux"
 
 

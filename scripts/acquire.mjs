@@ -11,6 +11,17 @@ import { inspectArchive } from './archive.mjs';
 const require = toolRequire(import.meta.url);
 const sevenZip = require('7zip-bin');
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+// Slow links can need far longer than the default two minutes for the whole
+// response body. Override only through an explicit positive integer.
+const DOWNLOAD_TIMEOUT_MS = (() => {
+  const raw = process.env.FACTORY_DOWNLOAD_TIMEOUT_MS;
+  if (raw === undefined) return 120_000;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    fail('FACTORY_DOWNLOAD_TIMEOUT_MS must be a positive integer number of milliseconds.');
+  }
+  return value;
+})();
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
 function responseEvidence(headers) {
@@ -55,7 +66,7 @@ async function downloadHttps(url, outputPath) {
     if (current.protocol !== 'https:' || current.username || current.password) {
       fail(`Refusing non-HTTPS or credentialed download URL: ${current.origin}`);
     }
-    const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(120_000) });
+    const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (REDIRECT_CODES.has(response.status)) {
       const location = response.headers.get('location');
       if (!location) fail(`HTTPS redirect from ${current.origin} had no Location header.`);
