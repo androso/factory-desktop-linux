@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+BUNDLE=/opt/factory-desktop-linux
+NODE="$BUNDLE/updater/bin/node"
+MANAGER="$BUNDLE/updater/recipes/scripts/factory-update-manager.mjs"
+export FACTORY_UPDATE_NPM_CLI="$BUNDLE/updater/node_modules/npm/bin/npm-cli.js"
+export FACTORY_UPDATE_NPM_MANIFEST="$BUNDLE/updater/npm.sha256"
+PATH="$BUNDLE/updater/bin:$PATH"
+export PATH
+STATE_HOME="${FACTORY_UPDATE_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/factory-desktop-linux/updater}"
+if [ ! -x "$NODE" ] || [ ! -r "$MANAGER" ] || [ ! -r "$FACTORY_UPDATE_NPM_CLI" ] ||
+    [ ! -r "$FACTORY_UPDATE_NPM_MANIFEST" ]; then
+  printf '%s\n' 'The managed Factory update runtime is missing.' >&2
+  exit 1
+fi
+if ! (CDPATH= cd -- "$BUNDLE/updater" && /usr/bin/sha256sum --check --status runtime.sha256); then
+  printf '%s\n' 'The managed Factory update runtime failed its checksum check.' >&2
+  exit 1
+fi
+if [ ! -x /usr/bin/flock ]; then
+  printf '%s\n' 'util-linux flock is required by the Factory update manager.' >&2
+  exit 1
+fi
+umask 077
+mkdir -p "$STATE_HOME"
+MANAGER_LOCK="$STATE_HOME/manager.lock"
+INSTALL_LOCK="$STATE_HOME/install.lock"
+
+case "${1:-}" in
+  install-ready|rollback|after-app-exit)
+    exec /usr/bin/flock -n -E 75 "$MANAGER_LOCK" \
+      /usr/bin/flock -n -x -E 75 "$INSTALL_LOCK" "$NODE" "$MANAGER" "$@"
+    ;;
+  *)
+    exec /usr/bin/flock -n -E 75 "$MANAGER_LOCK" "$NODE" "$MANAGER" "$@"
+    ;;
+esac

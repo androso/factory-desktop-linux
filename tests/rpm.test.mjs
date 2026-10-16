@@ -7,11 +7,13 @@ import { test } from 'node:test';
 import {
   distributionDirectory,
   hashTreeWithModes,
+  TARGET_FACTORY_VERSION,
   walkDirectories,
 } from '../scripts/lib.mjs';
 import {
   COMMON_BUILD_COMMANDS,
   FEDORA_RPM_COMMANDS,
+  UBUNTU_DEB_COMMANDS,
   SUPPORTED_BUILD_HOSTS,
   evaluateBuildHost,
   packageInstallCommand,
@@ -32,6 +34,10 @@ import {
   rpmOutputPaths,
   rpmPayloadLayout,
 } from '../scripts/rpm.mjs';
+import {
+  compareDebVersions, debOutputPaths, DEB_REVISION, parseDebIdentity,
+} from '../scripts/deb.mjs';
+import { debBackend, detectPackageFormat } from '../scripts/package-backend.mjs';
 
 const repoRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const canBuildFedoraRpm = spawnSync('rpmbuild', ['--version'], { encoding: 'utf8' }).status === 0 &&
@@ -43,7 +49,7 @@ async function tempDir(prefix = 'factory-rpm-test-') {
   return mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-test('build host support is limited to Ubuntu 24.04 and Fedora 44 x86_64', () => {
+test('build hosts support Ubuntu 24.04 portable, Ubuntu 26.04 DEB, and Fedora 44 RPM', () => {
   const fedora = evaluateBuildHost({
     osRelease: { ID: 'fedora', VERSION_ID: '44', PRETTY_NAME: 'Fedora Linux 44' },
     machine: 'x86_64',
@@ -54,16 +60,29 @@ test('build host support is limited to Ubuntu 24.04 and Fedora 44 x86_64', () =>
     machine: 'x86_64',
     nodeArchitecture: 'x64',
   });
+  const ubuntuLts = evaluateBuildHost({
+    osRelease: { ID: 'ubuntu', VERSION_ID: '26.04', PRETTY_NAME: 'Ubuntu 26.04' },
+    machine: 'x86_64',
+    nodeArchitecture: 'x64',
+  });
   assert.equal(fedora.supported, true);
   assert.equal(fedora.profile.rpmPackaging, true);
   assert.equal(ubuntu.supported, true);
   assert.equal(ubuntu.profile.rpmPackaging, false);
-  assert.equal(SUPPORTED_BUILD_HOSTS.length, 2);
+  assert.equal(ubuntu.profile.nativeInstallation, false);
+  assert.equal(ubuntuLts.supported, true);
+  assert.equal(ubuntuLts.profile.debPackaging, true);
+  assert.equal(ubuntuLts.profile.nativeInstallation, true);
+  assert.equal(SUPPORTED_BUILD_HOSTS.length, 3);
   assert.deepEqual(requiredCommandsForHost(fedora.profile), [
     ...COMMON_BUILD_COMMANDS,
     ...FEDORA_RPM_COMMANDS,
   ]);
   assert.deepEqual(requiredCommandsForHost(ubuntu.profile), COMMON_BUILD_COMMANDS);
+  assert.deepEqual(requiredCommandsForHost(ubuntuLts.profile), [
+    ...COMMON_BUILD_COMMANDS,
+    ...UBUNTU_DEB_COMMANDS,
+  ]);
   assert.equal(evaluateBuildHost({
     osRelease: { ID: 'fedora', VERSION_ID: '43' },
     machine: 'x86_64',
@@ -88,17 +107,57 @@ test('build host support is limited to Ubuntu 24.04 and Fedora 44 x86_64', () =>
     packageInstallCommand(prereqHost, ['libsecret-devel']),
     'sudo dnf install libsecret-devel',
   );
+  const ubuntuPackages = packagesForMissingPrerequisites(
+    { profile: ubuntuLts.profile, id: 'ubuntu' },
+    ['dpkg-deb', 'dpkg-shlibdeps', 'desktop-file-validate'],
+    true,
+  );
+  assert.deepEqual(ubuntuPackages, [
+    'desktop-file-utils', 'dpkg-dev', 'libsecret-1-dev',
+  ]);
+  assert.equal(
+    packageInstallCommand({ profile: ubuntuLts.profile, id: 'ubuntu' }, ['dpkg-dev']),
+    'sudo apt-get install dpkg-dev',
+  );
+});
+
+test('DEB output identity is pinned to Ubuntu 26.04 amd64 and compares Debian versions', () => {
+  const paths = debOutputPaths('/tmp/deb', { version: TARGET_FACTORY_VERSION });
+  assert.equal(paths.filename,
+    `factory-desktop-linux_${TARGET_FACTORY_VERSION}-${DEB_REVISION}_amd64.deb`);
+  assert.deepEqual(parseDebIdentity(
+    `factory-desktop-linux\n${TARGET_FACTORY_VERSION}-${DEB_REVISION}\namd64`,
+  ), {
+    name: 'factory-desktop-linux',
+    version: `${TARGET_FACTORY_VERSION}-${DEB_REVISION}`,
+    architecture: 'amd64',
+  });
+  assert.equal(compareDebVersions('0.194.0-1ubuntu26.04', '0.195.0-1ubuntu26.04'), -1);
+  assert.equal(compareDebVersions('0.194.0-1ubuntu26.04', '0.194.0-1ubuntu26.04'), 0);
+  assert.throws(() => parseDebIdentity('factory-desktop-linux\t0.194.0-1ubuntu24.04\tamd64'), /Unexpected DEB/);
+  assert.throws(() => debOutputPaths('/tmp', {
+    version: TARGET_FACTORY_VERSION, revision: '1ubuntu24.04',
+  }), /restricted to Ubuntu 26.04/);
+  assert.throws(() => debOutputPaths('/tmp', {
+    version: TARGET_FACTORY_VERSION, architecture: 'arm64',
+  }), /Only amd64/);
+  assert.equal(detectPackageFormat('ID=ubuntu\nVERSION_ID="26.04"\n'), 'deb');
+  assert.equal(detectPackageFormat('ID=ubuntu\nVERSION_ID="24.04"\n'), 'rpm');
+  assert.deepEqual(debBackend().installCommand('downgrade', '/tmp/candidate.deb'), [
+    'sudo',
+    ['apt-get', 'install', '-y', '--allow-downgrades', '/tmp/candidate.deb'],
+  ]);
 });
 
 test('RPM output name is Fedora 44 x86_64 and refuses output collisions', async () => {
   const root = await tempDir('rpm output collision ');
   try {
     const output = rpmOutputPaths(root, {
-      version: '0.194.0',
+      version: TARGET_FACTORY_VERSION,
       dist: '.fc44',
     });
-    assert.equal(RPM_RELEASE, '7');
-    assert.equal(output.filename, 'factory-desktop-linux-0.194.0-7.fc44.x86_64.rpm');
+    assert.equal(RPM_RELEASE, '8');
+    assert.equal(output.filename, `factory-desktop-linux-${TARGET_FACTORY_VERSION}-${RPM_RELEASE}.fc44.x86_64.rpm`);
     assert.equal(output.rpmPath, path.join(root, output.filename));
     assert.equal(output.checksumPath, `${output.rpmPath}.sha256`);
     await assertNoRpmOutputCollisions(
@@ -142,11 +201,11 @@ test('RPM output name is Fedora 44 x86_64 and refuses output collisions', async 
     await rm(root, { recursive: true, force: true });
   }
   assert.throws(() => rpmOutputPaths('/tmp', {
-    version: '0.194.0',
+    version: TARGET_FACTORY_VERSION,
     dist: '.el9',
   }), /restricted to Fedora 44/);
   assert.throws(() => rpmOutputPaths('/tmp', {
-    version: '0.194.0',
+    version: TARGET_FACTORY_VERSION,
     dist: '.fc44',
     architecture: 'aarch64',
   }), /Only x86_64/);
@@ -170,15 +229,17 @@ test('RPM wrapper and desktop entry do not register callback handlers', async ()
   assert.match(notice, /Do not publish or redistribute/i);
   const spec = await readFile(path.join(repoRoot, 'scripts/factory-desktop-linux.spec'), 'utf8');
   assert.match(spec, /^Name:\s+factory-desktop-linux$/m);
-  assert.match(spec, /^Version:\s+0\.194\.0$/m);
-  assert.match(spec, new RegExp(`^Release:\\s+${RPM_RELEASE}%\\{\\?dist\\}$`, 'm'));
+  assert.match(spec, /^Version:\s+%\{factory_version\}$/m);
+  assert.match(spec, /^Release:\s+%\{rpm_release\}%\{\?dist\}$/m);
   assert.match(spec, /-type d -exec chmod 0755 \{\} \+/);
   assert.match(spec, /^BuildArch:\s+x86_64$/m);
   assert.match(spec, /^\/opt\/factory-desktop-linux\/$/m);
   assert.match(spec, /^\/usr\/bin\/factory-desktop-linux$/m);
   assert.match(spec, /^\/usr\/share\/applications\/factory-desktop-linux\.desktop$/m);
   assert.match(spec, /%license/);
-  assert.doesNotMatch(spec, /^%post|^%preun|^%postun|^Requires:/m);
+  assert.doesNotMatch(spec, /^%post|^%preun|^%postun/m);
+  assert.match(spec, /^Requires:\s+python3$/m);
+  assert.match(spec, /^Requires:\s+util-linux-core$/m);
 });
 
 test('RPM wrapper forwards all arguments with shell-safe quoting', async () => {
@@ -302,11 +363,13 @@ test('desktop entry and RPM spec remain Fedora 44 only with no install actions',
   const versions = JSON.parse(await readFile(path.join(repoRoot, 'versions.json'), 'utf8'));
   const spec = await readFile(path.join(repoRoot, 'scripts/factory-desktop-linux.spec'), 'utf8');
   assert.equal(packageJson.scripts['package:rpm'], 'node scripts/package-rpm.mjs');
-  assert.equal(versions.factory, '0.194.0');
+  assert.equal(versions.factory, TARGET_FACTORY_VERSION);
   assert.equal(distributionDirectory('factory-desktop-linux-validated'),
     path.join(repoRoot, 'dist', 'factory-desktop-linux-validated'));
   assert.match(spec, /Fedora 44 x86_64/);
-  assert.doesNotMatch(spec, /^%post|^%preun|^%postun|^Requires:/m);
+  assert.doesNotMatch(spec, /^%post|^%preun|^%postun/m);
+  assert.match(spec, /^Requires:\s+python3$/m);
+  assert.match(spec, /^Requires:\s+util-linux-core$/m);
 });
 
 test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBuildFedoraRpm }, async () => {
@@ -355,7 +418,8 @@ test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBu
     await writeFile(path.join(payload, 'resources', 'bin', 'droid'), 'synthetic bundled cli', { mode: 0o755 });
     await writeFile(path.join(payload, 'resources', 'factory-desktop.svg'),
       await readFile(path.join(repoRoot, 'assets/factory-desktop.svg')), { mode: 0o644 });
-    await writeFile(path.join(payload, 'build-manifest.json'), '{"factoryVersion":"0.194.0"}\n', { mode: 0o644 });
+    await writeFile(path.join(payload, 'build-manifest.json'),
+      `${JSON.stringify({ factoryVersion: TARGET_FACTORY_VERSION })}\n`, { mode: 0o644 });
     await writeFile(path.join(sources, 'PERSONAL-USE-NOTICE.txt'),
       await readFile(path.join(repoRoot, 'assets/rpm-personal-use-notice.txt')), { mode: 0o644 });
     await writeFile(path.join(sources, 'factory-desktop-linux.desktop'), createDesktopEntry(), { mode: 0o644 });
@@ -375,6 +439,9 @@ test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBu
     const exclusion = privateSonameExclusion(['libfactory-private.so.1']);
     const built = spawnSync('rpmbuild', [
       '--define', `_topdir ${top}`,
+      '--define', `factory_version ${TARGET_FACTORY_VERSION}`,
+      '--define', `rpm_release ${RPM_RELEASE}`,
+      '--define', 'with_updater 0',
       '--define', 'app_icon_size scalable',
       '--define', 'app_icon_extension svg',
       '--define', `__provides_exclude ${exclusion}`,
@@ -403,11 +470,24 @@ test('synthetic Fedora RPM metadata, payload layout, and hashes', { skip: !canBu
     assert.equal(metadata.status, 0, metadata.stderr);
     assert.deepEqual(metadata.stdout.trimEnd().split('\n'), [
       'factory-desktop-linux',
-      '0.194.0',
+      TARGET_FACTORY_VERSION,
       `${RPM_RELEASE}.fc44`,
       'x86_64',
       'LicenseRef-Proprietary',
     ]);
+    const safetyMetadata = spawnSync('rpm', [
+      '-qp',
+      '--queryformat',
+      '[%{FILENAMES}\\t%{FILECAPS}\\t%{FILELINKTOS}\\n]',
+      rpmPath,
+    ], { encoding: 'utf8' });
+    assert.equal(safetyMetadata.status, 0, safetyMetadata.stderr);
+    for (const line of safetyMetadata.stdout.replace(/\n$/, '').split('\n')) {
+      const fields = line.split('\t');
+      assert.equal(fields.length, 3, line);
+      assert.ok(['', 'none', '(none)'].includes(fields[1]), line);
+      assert.ok(['', 'none', '(none)'].includes(fields[2]), line);
+    }
     const fileList = spawnSync('rpm', ['-qp', '--queryformat', '[%{FILENAMES}\\n]', rpmPath], {
       encoding: 'utf8',
     });

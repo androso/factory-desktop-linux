@@ -8,6 +8,18 @@ export const SUPPORTED_BUILD_HOSTS = [
     packageManager: 'apt-get',
     libsecretPackage: 'libsecret-1-dev',
     rpmPackaging: false,
+    debPackaging: false,
+    nativeInstallation: false,
+  },
+  {
+    id: 'ubuntu',
+    version: '26.04',
+    label: 'Ubuntu 26.04',
+    packageManager: 'apt-get',
+    libsecretPackage: 'libsecret-1-dev',
+    rpmPackaging: false,
+    debPackaging: true,
+    nativeInstallation: true,
   },
   {
     id: 'fedora',
@@ -16,6 +28,8 @@ export const SUPPORTED_BUILD_HOSTS = [
     packageManager: 'dnf',
     libsecretPackage: 'libsecret-devel',
     rpmPackaging: true,
+    debPackaging: false,
+    nativeInstallation: true,
   },
 ];
 
@@ -37,6 +51,15 @@ export const FEDORA_RPM_COMMANDS = [
   'cpio',
   'readelf',
   'desktop-file-validate',
+];
+
+export const UBUNTU_DEB_COMMANDS = [
+  'dpkg-deb',
+  'dpkg-query',
+  'dpkg',
+  'dpkg-shlibdeps',
+  'desktop-file-validate',
+  'readelf',
 ];
 
 export const OPTIONAL_BUILD_COMMANDS = [
@@ -74,12 +97,19 @@ const UBUNTU_COMMAND_PACKAGES = {
   make: 'build-essential',
   python3: 'python3',
   ldd: 'libc-bin',
+  'dpkg-deb': 'dpkg-dev',
+  'dpkg-query': 'dpkg',
+  dpkg: 'dpkg',
+  'dpkg-shlibdeps': 'dpkg-dev',
+  'desktop-file-validate': 'desktop-file-utils',
+  readelf: 'binutils',
 };
 
 export function requiredCommandsForHost(host) {
   return [
     ...COMMON_BUILD_COMMANDS,
     ...(host?.rpmPackaging ? FEDORA_RPM_COMMANDS : []),
+    ...(host?.debPackaging ? UBUNTU_DEB_COMMANDS : []),
   ];
 }
 

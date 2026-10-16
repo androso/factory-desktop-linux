@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic Factory Desktop update check
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=6h
+RandomizedDelaySec=10m
+Persistent=true
+Unit=factory-update-manager.service
+
+[Install]
+WantedBy=default.target

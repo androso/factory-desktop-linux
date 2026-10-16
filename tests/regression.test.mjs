@@ -12,11 +12,12 @@ import {
 } from '../scripts/artifact-validation.mjs';
 import { extractArchiveSafely, validateArchiveListing, validateArchivePath } from '../scripts/archive.mjs';
 import { mergeSidecar } from '../scripts/sidecar.mjs';
-import { patches, transformExact } from '../scripts/patches.mjs';
+import { findUniquePatchFile, patches, patchesForBuild, transformExact } from '../scripts/patches.mjs';
 import {
   distributionDirectory,
   hashFilesInTree,
   publishedRelativePath,
+  TARGET_FACTORY_VERSION,
   toolRequire,
 } from '../scripts/lib.mjs';
 
@@ -89,12 +90,12 @@ test('app.asar sidecars merge without loss and reject conflicting contents', asy
     const sidecar = path.join(root, 'app.asar.unpacked');
     await mkdir(path.join(app, 'node_modules', 'keytar'), { recursive: true });
     await mkdir(path.join(sidecar, 'node_modules', 'keytar'), { recursive: true });
-    await writeFile(path.join(app, 'package.json'), '{"version":"0.194.0"}');
+    await writeFile(path.join(app, 'package.json'), JSON.stringify({ version: TARGET_FACTORY_VERSION }));
     await writeFile(path.join(app, 'node_modules', 'keytar', 'package.json'), '{"name":"keytar"}');
     await writeFile(path.join(sidecar, 'node_modules', 'keytar', 'package.json'), '{"name":"keytar"}');
     await writeFile(path.join(sidecar, 'node_modules', 'keytar', 'build.node'), 'linux native module');
     assert.equal(await mergeSidecar(sidecar, app), 1);
-    assert.equal(await readFile(path.join(app, 'package.json'), 'utf8'), '{"version":"0.194.0"}');
+    assert.equal(JSON.parse(await readFile(path.join(app, 'package.json'), 'utf8')).version, TARGET_FACTORY_VERSION);
     assert.equal(await readFile(path.join(app, 'node_modules', 'keytar', 'build.node'), 'utf8'), 'linux native module');
     await writeFile(path.join(sidecar, 'package.json'), 'conflict');
     await assert.rejects(() => mergeSidecar(sidecar, app), /Conflicting/);
@@ -133,7 +134,7 @@ test('Droid CLI is pinned to the exact official Linux x64 package', async () => 
   assert.match(locked.integrity, /^sha512-[A-Za-z0-9+/]+=*$/);
 });
 
-test('version-specific patches require one exact source match', () => {
+test('patches require unique exact source preconditions', () => {
   const patch = {
     id: 'test-patch',
     factoryVersion: '0.194.0',
@@ -144,7 +145,7 @@ test('version-specific patches require one exact source match', () => {
   assert.equal(transformExact('const x = oldValue();', patch), 'const x = newValue();');
   assert.throws(() => transformExact('oldValue(); oldValue();', patch), /found 2/);
   assert.throws(() => transformExact('newValue();', patch), /found 0|already-applied/);
-  assert.throws(() => transformExact('oldValue();', { ...patch, factoryVersion: '' }), /metadata is incomplete/);
+  assert.throws(() => transformExact('oldValue();', { ...patch, id: '' }), /metadata is incomplete/);
   const callbackPatch = patches.find((item) => item.id === 'linux-callback-registration-opt-in');
   assert.ok(callbackPatch);
   const transformed = transformExact(callbackPatch.before, callbackPatch);
@@ -170,6 +171,27 @@ test('version-specific patches require one exact source match', () => {
     assert.ok(item, `missing required patch ${id}`);
     const result = transformExact(item.before, item);
     assert.equal(result, item.after);
+  }
+  const managerPatch = patches.find((item) => item.id === 'linux-update-manager-ipc');
+  assert.ok(managerPatch);
+  assert.equal(patchesForBuild({ withUpdater: false }).includes(managerPatch), false);
+  assert.equal(patchesForBuild({ withUpdater: true }).includes(managerPatch), true);
+  assert.equal(patchesForBuild({ withUpdater: true }).some((item) => item.id === 'linux-hide-update-menu'), false);
+});
+
+test('hashed app bundles resolve patch files only by one exact selector', async () => {
+  const directory = await tempDir();
+  try {
+    const first = path.join(directory, 'initLifecycle-abc.js');
+    const second = path.join(directory, 'initLifecycle-def.js');
+    await writeFile(first, 'before();');
+    await writeFile(second, 'other();');
+    const selector = { id: 'hashed-selector', before: 'before();' };
+    assert.equal(await findUniquePatchFile(directory, selector), first);
+    await writeFile(second, 'before();');
+    await assert.rejects(() => findUniquePatchFile(directory, selector), /unique source precondition/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

@@ -22,7 +22,7 @@ import {
   walkFiles,
   moveNoReplace,
 } from './lib.mjs';
-import { patches, transformExact } from './patches.mjs';
+import { findUniquePatchFile, patchesForBuild, transformExact } from './patches.mjs';
 import { mergeSidecar } from './sidecar.mjs';
 import { inspectPinnedDroid } from './droid.mjs';
 import {
@@ -34,19 +34,27 @@ import {
 const require = toolRequire(import.meta.url);
 const asar = require('@electron/asar');
 
-async function applyPatches(appDirectory, appVersion) {
+async function applyPatches(appDirectory, appVersion, { withUpdater = false } = {}) {
   const records = [];
-  for (const patch of patches) {
-    if (patch.factoryVersion !== appVersion) {
-      fail(`Patch ${patch.id} targets ${patch.factoryVersion}, not ${appVersion}.`);
-    }
-    const filePath = path.join(appDirectory, patch.file);
-    const content = transformExact(await readFile(filePath, 'utf8'), patch);
+  const patchFiles = (await walkFiles(appDirectory)).filter((file) =>
+    /\.(?:js|cjs|mjs)$/i.test(file));
+  const contents = new Map();
+  for (const patch of patchesForBuild({ withUpdater })) {
+    const filePath = await findUniquePatchFile(appDirectory, patch, {
+      files: patchFiles,
+      contents,
+    });
+    const relativeFile = path.relative(appDirectory, filePath);
+    const content = transformExact(contents.get(filePath), {
+      ...patch,
+      file: relativeFile,
+    });
+    contents.set(filePath, content);
     await writeFile(filePath, content);
     records.push({
       id: patch.id,
-      file: patch.file,
-      factoryVersion: patch.factoryVersion,
+      file: relativeFile,
+      factoryVersion: appVersion,
     });
   }
   for (const record of records) {
@@ -429,8 +437,9 @@ async function main() {
     fail(`Extraction manifest targets ${extractionManifest.factoryVersion}, expected ${TARGET_FACTORY_VERSION}.`);
   }
   await verifyExtractedInputs(extractionManifest);
-  const installerRecord = extractionManifest.inputFiles?.find((item) => item.name === 'Factory-0.194.0 Setup.exe');
-  if (!installerRecord) fail('Extraction was not based on the pinned Factory-0.194.0 Setup.exe installer.');
+  const sourceVersions = await readJson(path.join(ROOT, 'versions.json'), 'release recipe versions');
+  const installerRecord = extractionManifest.inputFiles?.find((item) => item.name === sourceVersions.installer.filename);
+  if (!installerRecord) fail(`Extraction was not based on the pinned Factory ${TARGET_FACTORY_VERSION} installer.`);
   const provenancePath = path.join(ROOT, 'inspection', `${installerRecord.name}.provenance.json`);
   const provenance = await readJson(provenancePath, 'pinned installer acquisition provenance');
   if (
@@ -438,7 +447,7 @@ async function main() {
     provenance.filename !== installerRecord.name ||
     provenance.status !== 200 ||
     provenance.sha256 !== installerRecord.sha256 ||
-    provenance.acquisitionUrl !== 'https://downloads.factory.ai/factory-desktop/releases/0.194.0/win32/x64/Factory-0.194.0%20Setup.exe'
+    provenance.acquisitionUrl !== sourceVersions.installer.url
   ) {
     fail('Pinned installer provenance does not match the official URL, successful transfer, and extracted input hash.');
   }
@@ -494,7 +503,10 @@ async function main() {
   await cp(sourceApp, appWork, { recursive: true, errorOnExist: true });
   const sidecarFilesAdded = await mergeSidecar(`${sourceAppar}.unpacked`, appWork);
 
-  const patchRecords = await applyPatches(appWork, TARGET_FACTORY_VERSION);
+  const withUpdater = process.env.PACKAGE_WITH_UPDATER === '1';
+  const packageFormat = process.env.PACKAGE_FORMAT || 'rpm';
+  if (!['rpm', 'deb'].includes(packageFormat)) fail(`Unsupported managed package format: ${packageFormat}.`);
+  const patchRecords = await applyPatches(appWork, TARGET_FACTORY_VERSION, { withUpdater });
   const keytar = await runNativeRebuild(appWork, host.profile);
   const securityInspection = await inspectSecurityAndRuntime(appWork);
   const { externalCallbackScheme: callbackScheme, rendererScheme } = await detectProtocolScheme(appWork);
@@ -509,6 +521,9 @@ async function main() {
   await rename(copiedElectron, packagedElectron);
   await chmod(packagedElectron, 0o755);
   await chmod(path.join(assembled, 'chrome-sandbox'), 0o755);
+  // This is public build metadata, not a private runtime profile. The RPM
+  // verifier must be able to read it after ownership changes to root.
+  await chmod(path.join(assembled, 'runtime-manifest.json'), 0o644);
 
   const resources = path.join(assembled, 'resources');
   await mkdir(resources, { recursive: true });
@@ -519,6 +534,8 @@ async function main() {
   await mkdir(path.join(resources, 'bin'), { recursive: true });
   await copyFile(droid.path, path.join(resources, 'bin', 'droid'));
   await chmod(path.join(resources, 'bin', 'droid'), 0o755);
+  await copyFile(path.join(ROOT, 'scripts', 'linux-cli.cjs'), path.join(resources, 'linux-cli.cjs'));
+  await chmod(path.join(resources, 'linux-cli.cjs'), 0o644);
   await copyFile(iconSource, path.join(resources, `factory-desktop${path.extname(iconSource).toLowerCase()}`));
   await writeFile(path.join(resources, 'protocol-scheme'), `${callbackScheme}\n`, { mode: 0o644 });
   const iconPath = path.join(resources, `factory-desktop${path.extname(iconSource).toLowerCase()}`);
@@ -547,9 +564,11 @@ async function main() {
   }
   const buildManifest = {
     factoryVersion: TARGET_FACTORY_VERSION,
+    updaterMode: withUpdater ? `managed-${packageFormat}` : 'manual-only',
     electronVersion: TARGET_ELECTRON_VERSION,
     droidCliVersion: TARGET_DROID_CLI_VERSION,
     droidBundleMode: 'pinned-official-linux-package',
+    linuxCliIntegrationSha256: await sha256File(path.join(resources, 'linux-cli.cjs')),
     toolchain: {
       packageJsonSha256: gates.toolchainManifest.packageJsonSha256,
       packageLockSha256: gates.toolchainManifest.packageLockSha256,
@@ -614,7 +633,9 @@ async function main() {
   }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   console.log(`Assembled portable app at ${path.relative(ROOT, finalDirectory)}.`);
   console.log(`Factory ${TARGET_FACTORY_VERSION}; Electron ${TARGET_ELECTRON_VERSION}; Droid ${droid.version}; callback ${callbackScheme}.`);
-  console.log('No updater, installer, or desktop association was registered.');
+  console.log(withUpdater
+    ? 'Updater controls are prepared for the managed RPM; no service was activated.'
+    : 'No updater, installer, or desktop association was registered.');
 }
 
 main().catch((error) => {

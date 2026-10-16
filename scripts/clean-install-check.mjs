@@ -139,13 +139,18 @@ await writeFile(path.join(stageDirectory, 'package.json'), packageContents, { fl
 await writeFile(path.join(stageDirectory, 'package-lock.json'), lockContents, { flag: 'wx', mode: 0o600 });
 await writeFile(path.join(stageDirectory, '.npmrc'), 'ignore-scripts=true\n', { flag: 'wx', mode: 0o600 });
 
-const result = spawnSync('npm', [
+const npmCli = process.env.npm_execpath || process.env.FACTORY_UPDATE_NPM_CLI;
+const npmArgs = [
   'ci',
   '--ignore-scripts',
   '--no-audit',
   '--no-fund',
   '--cache',
   npmCache,
+];
+const result = spawnSync(npmCli ? process.execPath : 'npm', [
+  ...(npmCli ? [npmCli] : []),
+  ...npmArgs,
 ], {
   cwd: stageDirectory,
   encoding: 'utf8',

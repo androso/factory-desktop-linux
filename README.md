@@ -2,11 +2,46 @@
 
 This is an **unofficial, personal-use packaging project** for Factory Desktop
 0.194.0. It packages the official Windows app's bundled JavaScript/UI with a
-pinned Linux Electron runtime. It is not built from Factory source, officially
-supported by Factory. Native updates are explicitly requested local rebuilds,
-not an upstream auto-updater.
+pinned Linux Electron runtime. It is not built from Factory source or
+officially supported by Factory. Portable builds remain manual-only. Managed
+Fedora RPM and Ubuntu 26.04 DEB packages include a policy-gated updater that
+builds a verified local package candidate and requires user authorization
+before installation.
 
-## Easy Fedora installation and updates
+## Ubuntu 26.04 installation and updates
+
+On **Ubuntu 26.04 x86_64**, clone this repository and run:
+
+```sh
+make bootstrap-native
+```
+
+This explicitly installs build prerequisites through `sudo apt-get`, then
+builds, tests, verifies, packages, and installs the managed DEB. Run it as your
+normal user, not with `sudo make`. If the prerequisites and pinned Node.js
+runtime are already installed, use `make install-native`. The same workflow is
+available as `npm run bootstrap:native` and `npm run install:native`.
+The Ubuntu archive's Node.js/npm versions may not match the updater pins; if
+they do not, preflight stops with the required versions. Use only a verified
+Node.js 24.19.0 and npm 11.17.0 runtime before retrying.
+
+Ubuntu 24.04 remains supported for portable builds only. It does not support
+the managed DEB workflow. `make deb` builds a DEB without installing it.
+Ubuntu package output is written to `dist/deb/` and is never overwritten.
+
+The updater uses `pkexec` and `dpkg` only after validating the candidate. It
+does not download dependencies or run package maintainer scripts during an
+automatic update. A release that changes the privileged helper or adds
+dependencies must be installed through the normal managed workflow after
+review.
+
+Preflight reports AppArmor's unprivileged-user-namespace restriction when
+present. No system-wide security setting is changed and Electron's sandbox is
+never disabled. A successful graphical Electron startup on Ubuntu 26.04 still
+needs confirmation in a disposable graphical session; preflight and DEB
+metadata tests do not establish that.
+
+## Fedora installation and updates
 
 On **Fedora 44 x86_64**, clone this repository and run:
 
@@ -26,11 +61,14 @@ For the very first checkout, if `git` or `make` is missing, install them with
 Builds use fresh, source-fingerprinted workspaces under `build/native/workspaces/`.
 Earlier portable bundles and RPMs are never overwritten. The workflow reuses a
 matching verified managed RPM on repeat installation; it never selects an
-artifact by filename or modification time. `make rpm` also reuses and re-verifies
-the portable app from `make build-app`, rather than assembling it again.
-Only the package-manager step runs
-with privileges. No login, model request, global CLI change, or callback
-registration is performed.
+artifact by filename or modification time. The selected manual or managed
+build mode is part of the fingerprint, so an updater-enabled RPM uses a separate
+verified workspace rather than reusing the manual-only `make build-app` output.
+During the initial repository workflow, only package-manager commands run with
+privileges. No login, model request,
+global CLI change, or callback registration is performed. Installing the
+managed RPM migrates existing managed artifacts into private user state and
+enables the per-user update timer; use `make updater-disable` to opt out.
 
 Update from a clean, trusted checkout:
 
@@ -41,10 +79,10 @@ make update-native
 This runs `git pull --ff-only`, reloads the updated workflow, and builds/installs
 the versions pinned by that checkout. Dirty or untracked source changes block
 the pull; use `make install-native` to build your local changes without pulling.
-This is **not** automatic discovery of the newest Factory release. New upstream
-Desktop versions still need inspected inputs, compatible patches, and updated
-pins in the repository. Desktop, Electron, and Droid are not upgraded separately
-behind your back. There is no background update service.
+The managed RPM can also discover a newer official Desktop release and build it
+locally. Each candidate must pass the pinned build, compatibility patches,
+verification, and RPM checks before the app offers it. Electron and Droid stay
+at their repository pins.
 
 Other commands:
 
@@ -54,38 +92,99 @@ make rpm             # Build and verify an RPM, without installing
 make status          # Show exact managed artifacts and the installed RPM
 make rollback        # Install the immediately previous managed RPM
 make recover         # Reconcile an interrupted or cancelled installation
+make updater-status  # Show updater policy and candidate status
+make updater-check   # Check the official LATEST endpoint now
+make updater-install # Install a verified candidate with authorization
+make updater-rollback
+make updater-enable  # Enable per-user background checks
+make updater-disable # Disable per-user background checks
 ```
+
+Updater-enabled controls and background checks are available from managed
+Fedora RPM and Ubuntu DEB packages. The portable app and packages built without
+`PACKAGE_WITH_UPDATER=1` remain manual-only. Background checks run as the
+logged-in user, download only from `downloads.factory.ai`, and never install
+without `pkexec` authorization. A background install does not launch the app.
+The timer does not refresh Factory account policy while the app is closed.
+Checks fail closed when the last policy sync is older than five minutes; open
+Factory Desktop to refresh it. This is an updater-session policy gate, not a
+system-wide administrative restriction. Its per-user policy cache is not
+tamper-resistant; deployments needing enforced organization policy must enforce
+it outside this user-level updater.
+The app's explicit update action closes the app, requests authorization, then
+relaunches only after a verified successful install. Closing or cancelling the
+quit leaves the candidate staged.
+
+The updater follows Factory's hosted-services, air-gap, and cached organization
+update policy. Restricted policy blocks updater release checks and installs.
+`make updater-disable` stops the timer and automatic startup checks without
+removing a staged candidate. The opt-out survives later managed installs.
+`make updater-enable` enables background checks again. If graphical
+authorization is unavailable, open Factory Desktop to refresh policy, then use
+`make updater-install` in a terminal. Automatic installation fails closed if a
+candidate changes the privileged helper or adds package dependencies; review and
+install such a release through the normal managed workflow instead.
 
 Installation and rollback refuse to replace the app while a Factory Desktop
 process owned by your user is running. Close the app, then rerun the command;
-the ready RPM is retained. Also ensure other users are not running it.
-Successful installation checks the installed build manifest and `rpm -V`.
-Same-version recipe changes use `dnf reinstall`; older versions use
-`dnf downgrade`. Rollback blocks that exact rejected artifact from being
-immediately installed again. A changed recipe must produce a new candidate.
+the ready package is retained. Also ensure other users are not running it.
+Successful installation checks the installed build manifest and package files.
+Same-version recipe changes reinstall; older versions use a package-manager
+downgrade. Rollback blocks that exact rejected artifact from being
 
-The workflow keeps its ready, installed, previous, and pending transaction
-records in `build/native/state.json`. A cancelled or interrupted `dnf` command
-requires `make recover` before retrying. Recovery never guesses about an
-ambiguous package state or runs a second package transaction. Inspect
-`dnf history` and `rpm -V factory-desktop-linux` if it reports ambiguity.
+The repository workflow keeps its ready, installed, previous, and pending
+transaction records in `build/native/state.json`. The updater stores its own
+state, candidate packages, and build workspaces under the user's XDG state/cache
+directories. During migration it copies verified artifacts and preserves the
+source state. A cancelled or interrupted package transaction requires `make recover`
+before retrying. Recovery never guesses about an
+ambiguous package state or runs a second package transaction. Inspect the
+package manager's status and package verification output if it reports ambiguity.
 A kernel-owned lock prevents concurrent workflows and releases on process exit.
 
-Rollback becomes available after two successful managed installations.
-An RPM installed before this workflow is not automatically imported as a
-rollback artifact. Do not delete `build/native/` if you need its rollback or
-recovery records. Failed build workspaces are retained for diagnosis and can
+Rollback becomes available after two successful managed installations. An
+interrupted legacy transaction must be recovered before its state can be
+migrated. Do not delete managed state if you need rollback or recovery records.
+Failed build workspaces are retained for diagnosis and can
 consume significant disk space; inspect exact paths before removing them.
-The existing lower-level `npm run build`, `verify`, and `package:rpm` commands
-remain available.
+The existing lower-level `npm run build`, `verify`, `package:rpm`, and
+`package:deb` commands remain available.
 
 ## Current status
 
 The official Windows installer was extracted as data only. A portable Linux
 x64 bundle has been assembled with the pinned Electron 42.11.12 runtime, the
 official Droid CLI, and a Linux keytar module. The current source pins CLI
-0.238.0 independently of Desktop 0.194.0. Automated
+0.240.1 independently of Desktop 0.194.0. Automated
 verification passes, including loading keytar under Electron.
+
+### Argon CLI upgrade (RPM release 8, manual-update mode)
+
+The source pins the official Linux x64 Droid CLI 0.240.1, checked on
+2026-10-13, including Google's Argon (`gemini-4-argon`). The verified bundle
+is `dist/factory-desktop-linux-argon/`; the Fedora package is
+`dist/rpm/factory-desktop-linux-0.194.0-8.fc44.x86_64.rpm`.
+This package retains manual updates and does not enable the managed updater.
+All 69 tests and 12 portable checks passed. The GUI smoke check was skipped
+because `xvfb-run` is unavailable; authenticated model selection is unverified.
+The installed release-7 package is unchanged until this RPM is installed.
+
+Close Factory Desktop before installing the update:
+
+```sh
+sudo dnf install ./dist/rpm/factory-desktop-linux-0.194.0-8.fc44.x86_64.rpm
+```
+
+### Ubuntu 26.04 managed DEB support (source only)
+
+The source now targets Ubuntu 26.04 x86_64 for managed DEB packaging,
+installation, rollback, recovery, and policy-gated updates. Ubuntu 24.04 remains
+portable-build-only. The Ubuntu package backend and archive validator have
+regression coverage, but no DEB has yet been built, installed, or exercised in
+a Ubuntu 26.04 VM. In particular, graphical Electron startup, AppArmor
+user-namespace behavior, `pkexec`, systemd user timers, and a real dpkg
+interruption/recovery remain unvalidated. Do not treat source-level tests as
+proof of end-to-end Ubuntu support.
 
 ### CLI upgrade (RPM release 7)
 
@@ -117,6 +216,23 @@ with this mixed-version bundle; the RPM has not been installed.
 See `VALIDATION.md` for build results and remaining desktop/CLI compatibility
 checks. The daemon smoke check alone does not establish RPC or chat
 compatibility. No RPM installation or model request is part of packaging.
+
+### Managed updater (source RPM release 8, not yet built)
+
+The checked-in source adds a Linux-only update manager for the managed Fedora
+RPM. It checks Factory's HTTPS `LATEST` endpoint, validates same-origin
+redirects, rebuilds candidates from the official installer, and stages only
+verified RPMs. Installation uses the fixed root-owned helper through `pkexec`;
+the helper rejects scripts and triggers, unsafe paths or modes, changed helper
+bytes, and new RPM dependencies. A per-user timer is enabled on first managed
+installation unless background checks were explicitly disabled. That opt-out
+survives later installs. Five-minute policy freshness gates release checks and
+installation.
+
+The app's managed update action uses a one-time, expiring handoff and relaunches
+only after a verified installation or safe cancellation. Portable builds remain
+manual-only. Source RPM release 8 has not been built or installed as part of
+this change; the last packaged artifact is release 7 above.
 
 The earlier release-6 personal-use RPM was built and verified on Fedora 44 x86_64 at
 `dist/rpm/factory-desktop-linux-0.194.0-6.fc44.x86_64.rpm`, with a sibling
@@ -183,17 +299,22 @@ SHA-256 in the pinned Electron package before extraction.
 
 ## Build prerequisites and commands
 
-The supported build hosts are **Ubuntu 24.04 x86_64** and **Fedora 44
-x86_64**. The portable build remains available on both. Fedora 44 is the only
-supported RPM packaging host, and the RPM is not claimed to work on other
-RPM distributions or to be officially supported by Factory.
+The supported build hosts are **Ubuntu 24.04 x86_64**, **Ubuntu 26.04
+x86_64**, and **Fedora 44 x86_64**. Portable builds remain available on all
+three. Native `.deb` packaging and installation target Ubuntu 26.04 only;
+RPM packaging and installation target Fedora 44 only. This project does not
+claim compatibility with other Ubuntu or RPM-based distributions or official
+Factory support.
 
 The native keytar rebuild requires `libsecret-1-dev` on Ubuntu or
-`libsecret-devel` on Fedora. Fedora RPM packaging also uses `rpmbuild`, `rpm`,
-`rpm2cpio`, `cpio`, `readelf`, `ldd`, and `desktop-file-validate`.
+`libsecret-devel` on Fedora. Ubuntu 26.04 DEB packaging uses `dpkg-deb`,
+`dpkg-query`, `dpkg-shlibdeps`, `readelf`, and `desktop-file-validate`.
+Fedora RPM packaging also uses `rpmbuild`, `rpm`, `rpm2cpio`, `cpio`,
+`readelf`, `ldd`, and `desktop-file-validate`.
 `npm run preflight` reports missing compilers, libraries, and packaging tools,
-and prints any privileged package command for separate approval. No system
-packages are installed automatically.
+checks the exact managed-updater Node.js/npm pins, and prints any privileged
+package command for separate approval. The managed package requires Node.js
+24.19.0 and npm 11.17.0. No system packages are installed automatically.
 
 In a fresh workspace, after any required prerequisite has been approved and
 installed:
@@ -215,6 +336,17 @@ On Fedora 44, after the portable bundle is freshly verified, build the RPM:
 ```sh
 npm run package:rpm
 ```
+
+On Ubuntu 26.04, after the portable bundle is freshly verified, build the DEB:
+
+```sh
+npm run package:deb
+```
+
+The DEB contains no maintainer scripts. It is built and verified with
+`dpkg-deb`, and any runtime dependencies are derived from the staged ELF
+payload. The verified `amd64` package and SHA-256 sidecar are written under
+`dist/deb/`; existing output files are preserved.
 
 If using a named distribution directory, verify and package that same
 directory, for example:
@@ -281,13 +413,18 @@ or model request. Passing this test is not proof of app/CLI protocol
 compatibility.
 
 The build requires the pinned Factory Desktop 0.194.0 and official Linux x64
-Droid CLI 0.238.0 package. Desktop and CLI versions are pinned independently;
+Droid CLI 0.240.1 package. Desktop and CLI versions are pinned independently;
 this mixed-version combination needs interactive compatibility testing.
 The smoke test runs that bundled candidate with an
 isolated HOME and records evidence for its exact binary hash. The binary is
 copied into the app bundle; no global `droid` command or CLI configuration is
 read or changed. The keytar native module is rebuilt against the selected
 Electron ABI and unpacked from `app.asar`.
+
+CLI 0.240.1 includes Google's Argon model (`gemini-4-argon`). The GUI reads
+available models from its bundled daemon, not the global terminal CLI.
+Rebuild and reinstall the desktop bundle to pick up this CLI update, then
+restart the app. Models remain subject to account and organization policy.
 
 The app declares Electron 42.3.3. This port pins 42.11.12, within the same
 major version, and records the runtime archive and executable hashes. The
@@ -303,8 +440,75 @@ overwritten or cleaned automatically.
 Use `launch.sh` for normal use. It preserves the desktop session and keyring
 while placing app data under `~/.local/share/factory-desktop-linux/`.
 
+### Official-app parity: profiles and terminal CLI
+
+The desktop uses its pinned bundled `resources/bin/droid` daemon, just like
+the official Windows/macOS app. It does not substitute the `droid` found on
+your terminal's `PATH`. The official interactive login-shell loader supplies
+development-tool paths. Linux preserves the launcher's HOME, XDG directories,
+selected Factory profile, and Electron safety overrides when merging that
+environment; shell startup files can still add tool paths and other variables.
+
+The older desktop catalog is supplemented with built-in models returned by
+the bundled daemon, including Argon when available to the signed-in account.
+New-chat, existing-session, and connected automation selectors retain these
+models without forcing preview flags or enabling disabled models. Existing
+organization, air-gap, and custom-model controls remain in place. Updating
+terminal Droid alone does not update the desktop's bundled CLI or renderer.
+
+The default **isolated** profile retains the existing
+`~/.local/share/factory-desktop-linux/factory-home/.factory` configuration.
+To opt into the normal user `~/.factory` configuration used by terminal Droid:
+
+```sh
+factory-desktop-linux --factory-profile=shared
+# Or, for a portable build:
+./dist/factory-desktop-linux-parity/launch.sh --factory-profile=shared
+```
+
+`FACTORY_LINUX_PROFILE=shared` selects the same mode. A leading
+`--factory-profile=isolated` or `--factory-profile=shared` overrides that
+environment default. The application-menu launcher remains isolated unless
+its environment explicitly selects shared mode.
+
+Shared mode preserves the host XDG environment and uses a separate Electron
+user-data directory, so it cannot silently attach to an isolated-profile
+window. It reads and can update the existing user `.factory` configuration
+through normal app operations. It never copies, merges, or migrates profiles.
+Existing isolated sessions and configuration remain where they were; GUI-only
+preferences and authentication are not guaranteed to transfer between profiles.
+
+The existing **Install 'droid' Command...** menu keeps the official sign-in,
+air-gap, organization-policy, and installation-prompt flow. On Linux it
+installs a verified executable copy into the real `~/.local/bin`, regardless
+of desktop profile. The terminal command uses normal terminal configuration,
+not an implicit desktop-profile override. If that directory is absent from
+`PATH`, the menu updates the real Bash, Zsh (`ZDOTDIR` supported), Fish (host
+`XDG_CONFIG_HOME` supported), or fallback `.profile` configuration.
+
+Installation refuses to replace an existing file, symlink (including a broken
+one), or install record. A private `.factory-desktop-droid.json` sidecar records
+the installed executable's checksum and file identity. The uninstall menu only
+removes that unchanged, recorded copy; independently installed, replaced, or
+auto-updated terminal CLIs are left alone. PATH additions remain after uninstall,
+as with the official app. No terminal CLI installation or shell configuration
+change happens merely by building or packaging the app.
+
+These changes require a newly built bundle. Existing installed release-8 files
+are not patched in place.
+
+Older RPMs contain a root-only `runtime-manifest.json`. If that is the sole
+unreadable-checksum result from `rpm -V`, native installation requests sudo
+authorization to verify the entire installed package before continuing.
+Changed checksums, other verification failures, or cancelled authorization
+still block installation. New bundles ship this non-secret metadata as `0644`,
+so normal-user RPM verification can read it. Do not change installed file
+permissions by hand to work around the guard.
+
 `launch-test.sh` uses isolated workspace-local HOME and XDG directories and
-disables keyring access. Do not put real credentials in test data.
+disables keyring access. It also pins CLI-install home/config paths to the test
+profile even if the invoking environment selects shared mode. Do not put real
+credentials in test data.
 
 The Secret Service test is separate, uses dummy values only, and requires a
 dedicated isolated D-Bus/keyring session. It refuses to run unless its

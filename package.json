@@ -13,7 +13,7 @@
     "status:native": "sh scripts/native.sh status",
     "rollback:native": "sh scripts/native.sh rollback",
     "recover:native": "sh scripts/native.sh recover",
-    "check:native": "node --check scripts/native.mjs && node --check scripts/native-cli.mjs && sh -n scripts/native.sh",
+    "check:native": "node --check scripts/native.mjs && node --check scripts/native-cli.mjs && node --check scripts/updater.mjs && node --check scripts/factory-update-manager.mjs && sh -n scripts/native.sh && sh -n scripts/factory-update-manager && python3 -c \"compile(open('scripts/install-helper.py', encoding='utf8').read(), 'scripts/install-helper.py', 'exec')\"",
     "acquire": "node scripts/acquire.mjs",
     "extract": "node scripts/extract.mjs",
     "electron:fetch": "node scripts/fetch-electron.mjs",
@@ -22,14 +22,15 @@
     "preflight": "node scripts/preflight.mjs",
     "clean-install": "node scripts/clean-install-check.mjs",
     "daemon:check": "node scripts/daemon-compat-check.mjs",
-    "check": "node --check scripts/lib.mjs && node --check scripts/host.mjs && node --check scripts/rpm.mjs && node --check scripts/package-rpm.mjs && node --check scripts/archive.mjs && node --check scripts/artifact-validation.mjs && node --check scripts/acquire.mjs && node --check scripts/sidecar.mjs && node --check scripts/droid.mjs && node --check scripts/extract.mjs && node --check scripts/fetch-electron.mjs && node --check scripts/preflight.mjs && node --check scripts/clean-install-check.mjs && node --check scripts/daemon-compat-check.mjs && node --check scripts/run-tests.mjs && node --check scripts/build.mjs && node --check scripts/verify.mjs && node --check scripts/patches.mjs && node --check scripts/keytar-electron-check.cjs && node --check scripts/keytar-secret-service-test.cjs && sh -n scripts/launch.sh && sh -n scripts/launch-test.sh && sh -n scripts/install-desktop.sh && sh -n scripts/rollback-desktop.sh && python3 -c \"compile(open('scripts/desktop-integration.py', encoding='utf8').read(), 'scripts/desktop-integration.py', 'exec')\"",
+    "check": "node --check scripts/lib.mjs && node --check scripts/host.mjs && node --check scripts/rpm.mjs && node --check scripts/deb.mjs && node --check scripts/package-backend.mjs && node --check scripts/package-deb.mjs && node --check scripts/updater-runtime.mjs && node --check scripts/package-rpm.mjs && node --check scripts/archive.mjs && node --check scripts/artifact-validation.mjs && node --check scripts/acquire.mjs && node --check scripts/sidecar.mjs && node --check scripts/droid.mjs && node --check scripts/extract.mjs && node --check scripts/fetch-electron.mjs && node --check scripts/preflight.mjs && node --check scripts/clean-install-check.mjs && node --check scripts/daemon-compat-check.mjs && node --check scripts/run-tests.mjs && node --check scripts/build.mjs && node --check scripts/verify.mjs && node --check scripts/patches.mjs && node --check scripts/updater.mjs && node --check scripts/factory-update-manager.mjs && node --check scripts/native.mjs && node --check scripts/native-cli.mjs && node --check scripts/keytar-electron-check.cjs && node --check scripts/keytar-secret-service-test.cjs && sh -n scripts/launch.sh && sh -n scripts/launch-test.sh && sh -n scripts/install-desktop.sh && sh -n scripts/rollback-desktop.sh && sh -n scripts/native.sh && sh -n scripts/factory-update-manager && python3 -c \"compile(open('scripts/desktop-integration.py', encoding='utf8').read(), 'scripts/desktop-integration.py', 'exec'); compile(open('scripts/install-helper.py', encoding='utf8').read(), 'scripts/install-helper.py', 'exec')\"",
+    "package:deb": "node scripts/package-deb.mjs",
     "package:rpm": "node scripts/package-rpm.mjs",
     "test": "node scripts/run-tests.mjs"
   },
   "devDependencies": {
     "@electron/asar": "4.2.0",
     "@electron/rebuild": "4.0.3",
-    "@factory/cli-linux-x64": "0.238.0",
+    "@factory/cli-linux-x64": "0.240.1",
     "7zip-bin": "5.2.0",
     "electron": "42.11.12",
     "node-addon-api": "4.3.0"

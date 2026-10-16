@@ -132,8 +132,10 @@ async function main() {
       'launch-test.sh',
       'resources/app.asar',
       'resources/bin/droid',
+      'resources/linux-cli.cjs',
       'resources/protocol-scheme',
       'build-manifest.json',
+      'runtime-manifest.json',
       'scripts/install-desktop.sh',
       'scripts/rollback-desktop.sh',
       'scripts/keytar-secret-service-test.cjs',
@@ -146,6 +148,9 @@ async function main() {
       if (['factory-desktop', 'launch.sh', 'launch-test.sh', 'scripts/install-desktop.sh', 'scripts/rollback-desktop.sh']
         .includes(relativePath) && (fileStat.mode & 0o111) === 0) {
         fail(`Packaged launcher is not executable: ${relativePath}.`);
+      }
+      if (relativePath === 'runtime-manifest.json' && (fileStat.mode & 0o7777) !== 0o644) {
+        fail('Public runtime metadata must use mode 0644 so installed-package verification can read it.');
       }
     }
     const iconPng = await exists(path.join(distribution, 'resources', 'factory-desktop.png'));
@@ -185,6 +190,10 @@ async function main() {
       const integrationHash = await hashFilesInTree(path.join(distribution, 'scripts'));
       if (integrationHash !== buildManifest.desktopIntegrationSha256) {
         fail('Packaged desktop integration scripts do not match the build manifest; rebuild the portable bundle.');
+      }
+      if (await sha256File(path.join(distribution, 'resources', 'linux-cli.cjs')) !==
+          buildManifest.linuxCliIntegrationSha256) {
+        fail('Packaged Linux CLI integration differs from the build manifest.');
       }
       return `${buildManifest.factoryVersion}, Electron ${buildManifest.electronVersion}, Linux x64`;
     });

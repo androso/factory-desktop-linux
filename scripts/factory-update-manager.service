@@ -1,0 +1,17 @@
+[Unit]
+Description=Check for Factory Desktop updates
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/factory-update-manager check --background
+TimeoutStartSec=4h
+TimeoutStopSec=30s
+UMask=0077
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+Nice=10
+IOSchedulingClass=idle

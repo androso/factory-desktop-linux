@@ -2,12 +2,30 @@ import path from 'node:path';
 import { fail } from './lib.mjs';
 
 export const RPM_PACKAGE_NAME = 'factory-desktop-linux';
-export const RPM_RELEASE = '7';
+export const RPM_RELEASE = '8';
 export const RPM_BUNDLE_ROOT = '/opt/factory-desktop-linux';
 export const RPM_WRAPPER_PATH = '/usr/bin/factory-desktop-linux';
+export const RPM_UPDATE_MANAGER_PATH = '/usr/bin/factory-update-manager';
+export const RPM_INSTALL_HELPER_PATH = '/usr/libexec/factory-desktop-linux/install-helper';
 export const RPM_DESKTOP_PATH = '/usr/share/applications/factory-desktop-linux.desktop';
 export const RPM_LICENSE_PATH =
   `/usr/share/licenses/${RPM_PACKAGE_NAME}/PERSONAL-USE-NOTICE.txt`;
+
+export function verifyInstalledRpm(run) {
+  try {
+    run('rpm', ['-V', RPM_PACKAGE_NAME], { capture: true });
+  } catch (error) {
+    // Older bundles shipped this public metadata as root-only (0600).
+    // A '?' is an unreadable checksum, not a successful integrity check.
+    // Retry the full check with authorization, never ignore the file.
+    if (error.status !== 1 || error.stderr?.trim() ||
+        !/^\.\.\?\.{6}\s+\/opt\/factory-desktop-linux\/runtime-manifest\.json$/.test(error.stdout?.trim() ?? '')) {
+      throw error;
+    }
+    console.log('Legacy runtime metadata is root-only. Verifying the installed RPM through sudo.');
+    run('sudo', ['rpm', '-V', RPM_PACKAGE_NAME], { capture: false });
+  }
+}
 
 export function rpmOutputPaths(outputDirectory, {
   version,
@@ -109,7 +127,12 @@ export function privateSonameExclusion(sonames) {
   return `^(${escaped.join('|')})([(][^)]*[)])*[(]64bit[)]$`;
 }
 
-export function rpmPayloadLayout(bundleRelativeFiles, iconTargetPath, bundleRelativeDirectories = []) {
+export function rpmPayloadLayout(
+  bundleRelativeFiles,
+  iconTargetPath,
+  bundleRelativeDirectories = [],
+  { withUpdater = false } = {},
+) {
   const normalizedBundleFiles = bundleRelativeFiles.map((relative) => {
     const portable = relative.split(path.sep).join('/');
     const segments = portable.split('/');
@@ -140,6 +163,12 @@ export function rpmPayloadLayout(bundleRelativeFiles, iconTargetPath, bundleRela
     RPM_DESKTOP_PATH,
     iconTargetPath,
     RPM_LICENSE_PATH,
+    ...(withUpdater ? [
+      RPM_UPDATE_MANAGER_PATH,
+      RPM_INSTALL_HELPER_PATH,
+      '/usr/lib/systemd/user/factory-update-manager.service',
+      '/usr/lib/systemd/user/factory-update-manager.timer',
+    ] : []),
   ];
   const files = [...normalizedBundleFiles, ...standaloneFiles];
   const directories = new Set([RPM_BUNDLE_ROOT]);

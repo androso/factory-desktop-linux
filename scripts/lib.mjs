@@ -33,6 +33,52 @@ export function fail(message) {
   throw new Error(message);
 }
 
+export async function fetchApprovedHttps(
+  rawUrl,
+  {
+    fetchImpl = globalThis.fetch,
+    allowedOrigins,
+    timeoutMs,
+    cache,
+    maxRedirects = 5,
+    label = 'request',
+  } = {},
+) {
+  const origins = new Set(allowedOrigins ?? []);
+  const validate = (candidate) => {
+    const url = new URL(candidate);
+    if (url.protocol !== 'https:' || url.username || url.password || !origins.has(url.origin)) {
+      fail(`Refusing a non-HTTPS, credentialed, or unapproved URL for ${label}: ${url.origin}.`);
+    }
+    return url;
+  };
+
+  let current = validate(rawUrl);
+  const redirects = [];
+  for (let count = 0; ; count += 1) {
+    const options = {
+      redirect: 'manual',
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+      ...(cache ? { cache } : {}),
+    };
+    const response = await fetchImpl(current, options);
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return { response, current, redirects };
+    }
+    const location = response.headers.get('location');
+    await response.body?.cancel();
+    if (!location) fail(`Redirect from ${current.origin} omitted Location for ${label}.`);
+    if (count >= maxRedirects) fail(`HTTPS ${label} exceeded the redirect limit.`);
+    const next = validate(new URL(location, current));
+    redirects.push({
+      status: response.status,
+      from: current.origin,
+      to: next.origin,
+    });
+    current = next;
+  }
+}
+
 export function distributionDirectory(
   name = process.env.FACTORY_DIST_NAME ?? 'factory-desktop-linux',
 ) {

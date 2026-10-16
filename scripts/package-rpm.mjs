@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   chmod,
   cp,
+  copyFile,
   lstat,
   mkdir,
   readFile,
@@ -15,6 +16,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   ROOT,
   TARGET_FACTORY_VERSION,
+  assertElfX64,
   distributionDirectory,
   exists,
   fail,
@@ -27,15 +29,18 @@ import {
   walkDirectories,
   walkFiles,
 } from './lib.mjs';
+import { SOURCE_INPUTS } from './native.mjs';
 import {
   detectBuildHost,
 } from './host.mjs';
 import {
   RPM_BUNDLE_ROOT,
   RPM_DESKTOP_PATH,
+  RPM_INSTALL_HELPER_PATH,
   RPM_LICENSE_PATH,
   RPM_PACKAGE_NAME,
   RPM_RELEASE,
+  RPM_UPDATE_MANAGER_PATH,
   RPM_WRAPPER_PATH,
   assertNoRpmOutputCollisions,
   createDesktopEntry,
@@ -50,10 +55,30 @@ const SPEC_PATH = path.join(ROOT, 'scripts', 'factory-desktop-linux.spec');
 const NOTICE_PATH = path.join(ROOT, 'assets', 'rpm-personal-use-notice.txt');
 const RPM_TIMEOUT = 20 * 60 * 1000;
 
+async function resolveNpmPackageDirectory() {
+  const candidates = [
+    process.env.FACTORY_UPDATE_NPM_CLI,
+    process.env.npm_execpath,
+  ].filter(Boolean);
+  if (!candidates.length) {
+    const result = spawnSync('npm', ['root', '-g'], { encoding: 'utf8', timeout: 30_000 });
+    if (result.status === 0) candidates.push(path.join(result.stdout.trim(), 'npm', 'bin', 'npm-cli.js'));
+  }
+  for (const candidate of candidates) {
+    const cliPath = await realpath(candidate).catch(() => null);
+    if (!cliPath || path.basename(cliPath) !== 'npm-cli.js' ||
+        path.basename(path.dirname(path.dirname(cliPath))) !== 'npm') continue;
+    const packageDirectory = path.dirname(path.dirname(cliPath));
+    const manifest = await readJson(path.join(packageDirectory, 'package.json')).catch(() => null);
+    if (manifest?.name === 'npm') return { directory: packageDirectory, manifest, cliPath };
+  }
+  fail('Could not locate the npm CLI package to bundle with the managed updater Node runtime.');
+}
+
 function readPackageVersion(manifest) {
   if (manifest.factoryVersion !== TARGET_FACTORY_VERSION ||
       manifest.architecture !== 'x64' || manifest.platform !== 'linux') {
-    fail('Portable build manifest does not match the pinned Factory 0.194.0 Linux x64 target.');
+    fail(`Portable build manifest does not match the pinned Factory ${TARGET_FACTORY_VERSION} Linux x64 target.`);
   }
   return manifest.factoryVersion;
 }
@@ -67,7 +92,7 @@ async function findLatestVerificationReport(buildDirectory) {
   return { reportPath, report: await readJson(reportPath, 'latest portable verification report') };
 }
 
-async function verifyPortableDistribution(distribution, buildDirectory) {
+async function verifyPortableDistribution(distribution, buildDirectory, { withUpdater = false } = {}) {
   const markerPath = path.join(distribution, 'BUILD_COMPLETE');
   const marker = await readFile(markerPath, 'utf8').catch(() => '');
   if (!marker.startsWith(`${TARGET_FACTORY_VERSION} Electron `)) {
@@ -76,6 +101,10 @@ async function verifyPortableDistribution(distribution, buildDirectory) {
   const manifestPath = path.join(distribution, 'build-manifest.json');
   const manifest = await readJson(manifestPath, 'portable build manifest');
   readPackageVersion(manifest);
+  const expectedUpdaterMode = withUpdater ? 'managed-rpm' : 'manual-only';
+  if (manifest.updaterMode !== expectedUpdaterMode) {
+    fail(`Portable bundle updater mode is ${manifest.updaterMode ?? 'missing'}, expected ${expectedUpdaterMode}. Rebuild with PACKAGE_WITH_UPDATER=${withUpdater ? '1' : '0'}.`);
+  }
 
   const { reportPath, report } = await findLatestVerificationReport(buildDirectory);
   if (report.distributionDirectory !== path.relative(ROOT, distribution)) {
@@ -202,7 +231,7 @@ async function normalizePayloadDirectoryModes(payloadDirectory) {
   }
 }
 
-async function createWorkspace(distribution, icon) {
+async function createWorkspace(distribution, icon, { withUpdater = false } = {}) {
   const workspace = path.join(ROOT, 'build', `.rpm-workspace-${Date.now()}-${randomUUID()}`);
   const top = path.join(workspace, 'rpmbuild');
   const sources = path.join(top, 'SOURCES');
@@ -218,14 +247,84 @@ async function createWorkspace(distribution, icon) {
 
   const payloadDirectory = path.join(sources, 'payload');
   await cp(distribution, payloadDirectory, { recursive: true, errorOnExist: true });
-  if (await hashTreeWithModes(payloadDirectory) !== await hashTreeWithModes(distribution)) {
+  const expectedBundleTreeSha256 = await hashTreeWithModes(payloadDirectory);
+  if (expectedBundleTreeSha256 !== await hashTreeWithModes(distribution)) {
     fail('Workspace copy changed bundle contents, permissions, or binary hashes.');
   }
   await normalizePayloadDirectoryModes(payloadDirectory);
 
+  const updaterSourcePairs = [];
+  if (withUpdater) {
+    const versions = await readJson(path.join(ROOT, 'versions.json'), 'managed updater pins');
+    if (versions.updaterNode !== process.version.slice(1)) {
+      fail(`Updater packaging requires managed Node ${versions.updaterNode}, found ${process.version}.`);
+    }
+    const npmPackage = await resolveNpmPackageDirectory();
+    if (npmPackage.manifest.version !== versions.updaterNpm) {
+      fail(`Updater packaging requires pinned npm ${versions.updaterNpm}, found ${npmPackage.manifest.version}.`);
+    }
+    const updaterRoot = path.join(payloadDirectory, 'updater');
+    const runtimeDirectory = path.join(updaterRoot, 'bin');
+    const recipesDirectory = path.join(updaterRoot, 'recipes');
+    const npmDirectory = path.join(updaterRoot, 'node_modules', 'npm');
+    await mkdir(runtimeDirectory, { recursive: true, mode: 0o755 });
+    await mkdir(recipesDirectory, { recursive: true, mode: 0o755 });
+    await mkdir(path.dirname(npmDirectory), { recursive: true, mode: 0o755 });
+    const nodePath = path.join(runtimeDirectory, 'node');
+    await copyFile(process.execPath, nodePath);
+    await chmod(nodePath, 0o755);
+    await assertElfX64(nodePath, 'Managed updater Node runtime');
+    const nodeSha256 = await sha256File(nodePath);
+    await cp(npmPackage.directory, npmDirectory, { recursive: true, errorOnExist: true });
+    const npmTreeSha256 = await hashTreeWithModes(npmDirectory);
+    const npmChecksumPath = path.join(updaterRoot, 'npm.sha256');
+    const npmChecksums = [];
+    for (const file of await walkFiles(npmDirectory)) {
+      npmChecksums.push(`${await sha256File(file)}  ${path.relative(updaterRoot, file).split(path.sep).join('/')}`);
+    }
+    await writeFile(npmChecksumPath, `${npmChecksums.sort().join('\n')}\n`, {
+      flag: 'wx',
+      mode: 0o644,
+    });
+    await writeFile(path.join(updaterRoot, 'runtime-manifest.json'), `${JSON.stringify({
+      version: versions.updaterNode,
+      npmVersion: versions.updaterNpm,
+      platform: 'linux',
+      architecture: 'x64',
+      executable: 'bin/node',
+      sha256: nodeSha256,
+      npmTreeSha256,
+      source: 'Pinned host Node executable copied into the root-owned RPM payload.',
+    }, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
+    await writeFile(path.join(updaterRoot, 'runtime.sha256'), `${nodeSha256}  bin/node\n`, {
+      flag: 'wx',
+      mode: 0o644,
+    });
+
+    for (const name of SOURCE_INPUTS) {
+      const source = path.join(ROOT, name);
+      const destination = path.join(recipesDirectory, name);
+      await cp(source, destination, { recursive: true, errorOnExist: true });
+      updaterSourcePairs.push([source, destination]);
+    }
+    updaterSourcePairs.push([npmPackage.directory, npmDirectory]);
+    updaterSourcePairs.push([process.execPath, nodePath]);
+    const nodeChecksum = path.join(updaterRoot, 'runtime.sha256');
+    updaterSourcePairs.push([nodeChecksum, nodeChecksum]);
+    updaterSourcePairs.push([npmChecksumPath, npmChecksumPath]);
+    const nodeManifest = path.join(updaterRoot, 'runtime-manifest.json');
+    updaterSourcePairs.push([nodeManifest, nodeManifest]);
+  }
+  await normalizePayloadDirectoryModes(payloadDirectory);
+  const expectedTreeSha256 = await hashTreeWithModes(payloadDirectory);
+
   const wrapperPath = path.join(sources, RPM_PACKAGE_NAME);
   const desktopPath = path.join(sources, `${RPM_PACKAGE_NAME}.desktop`);
   const noticePath = path.join(sources, 'PERSONAL-USE-NOTICE.txt');
+  const updaterManagerPath = path.join(sources, 'factory-update-manager');
+  const installHelperPath = path.join(sources, 'install-helper.py');
+  const updaterServicePath = path.join(sources, 'factory-update-manager.service');
+  const updaterTimerPath = path.join(sources, 'factory-update-manager.timer');
   await writeFile(wrapperPath, createSystemWrapper(RPM_BUNDLE_ROOT), { flag: 'wx', mode: 0o755 });
   await chmod(wrapperPath, 0o755);
   await writeFile(desktopPath, createDesktopEntry(), { flag: 'wx', mode: 0o644 });
@@ -234,8 +333,19 @@ async function createWorkspace(distribution, icon) {
   const specPath = path.join(top, 'SPECS', `${RPM_PACKAGE_NAME}.spec`);
   await cp(SPEC_PATH, specPath, { errorOnExist: true });
   await cp(NOTICE_PATH, noticePath, { errorOnExist: true });
+  for (const [source, destination] of [
+    [path.join(ROOT, 'scripts', 'factory-update-manager'), updaterManagerPath],
+    [path.join(ROOT, 'scripts', 'install-helper.py'), installHelperPath],
+    [path.join(ROOT, 'scripts', 'factory-update-manager.service'), updaterServicePath],
+    [path.join(ROOT, 'scripts', 'factory-update-manager.timer'), updaterTimerPath],
+  ]) {
+    await cp(source, destination, { errorOnExist: true });
+  }
+  await chmod(updaterManagerPath, 0o755);
+  await chmod(installHelperPath, 0o755);
+  await chmod(updaterServicePath, 0o644);
+  await chmod(updaterTimerPath, 0o644);
 
-  const expectedTreeSha256 = await hashTreeWithModes(payloadDirectory);
   return {
     workspace,
     top,
@@ -245,10 +355,17 @@ async function createWorkspace(distribution, icon) {
     desktopPath,
     noticePath,
     stagedIcon,
+    updaterManagerPath,
+    installHelperPath,
+    updaterServicePath,
+    updaterTimerPath,
+    updaterSourcePairs,
     specPath,
     iconTargetPath: icon.path,
     iconSize: icon.size,
     iconExtension: icon.extension,
+    withUpdater,
+    expectedBundleTreeSha256,
     expectedTreeSha256,
   };
 }
@@ -308,6 +425,9 @@ function runRpmbuild(workspace, host, privateSonames) {
     '--define', `_topdir ${workspace.top}`,
     '--define', `app_icon_size ${workspace.iconSize}`,
     '--define', `app_icon_extension ${workspace.iconExtension}`,
+    '--define', `factory_version ${TARGET_FACTORY_VERSION}`,
+    '--define', `rpm_release ${RPM_RELEASE}`,
+    '--define', `with_updater ${workspace.withUpdater ? 1 : 0}`,
   ];
   const exclusion = privateSonameExclusion(privateSonames);
   if (exclusion) {
@@ -423,6 +543,17 @@ async function validateRpmMetadata(
         ?.startsWith('-rw-r--r--')) {
     fail(`RPM wrapper, icon, desktop entry, or license notice has unexpected permissions:\n${ownership}`);
   }
+  if (modeFor.has(RPM_UPDATE_MANAGER_PATH) &&
+      (modeFor.get(RPM_UPDATE_MANAGER_PATH) !== '-rwxr-xr-x' ||
+       modeFor.get(RPM_INSTALL_HELPER_PATH) !== '-rwxr-xr-x' ||
+       modeFor.get('/usr/lib/systemd/user/factory-update-manager.service') !== '-rw-r--r--' ||
+       modeFor.get('/usr/lib/systemd/user/factory-update-manager.timer') !== '-rw-r--r--' ||
+       modeFor.get(`${RPM_BUNDLE_ROOT}/updater/bin/node`) !== '-rwxr-xr-x' ||
+       modeFor.get(`${RPM_BUNDLE_ROOT}/updater/runtime-manifest.json`) !== '-rw-r--r--' ||
+       modeFor.get(`${RPM_BUNDLE_ROOT}/updater/runtime.sha256`) !== '-rw-r--r--' ||
+       modeFor.get(`${RPM_BUNDLE_ROOT}/updater/npm.sha256`) !== '-rw-r--r--')) {
+    fail(`RPM updater payload has unexpected ownership or permissions:\n${ownership}`);
+  }
 
   const provides = rpmQuery(rpmPath, '[%{PROVIDENAME}\\n]');
   for (const soname of privateSonames) {
@@ -432,6 +563,13 @@ async function validateRpmMetadata(
     }
   }
   const requires = rpmQuery(rpmPath, '[%{REQUIRENAME}\\n]');
+  if (expectedFiles.includes(RPM_UPDATE_MANAGER_PATH)) {
+    for (const dependency of ['python3', 'util-linux-core']) {
+      if (!requires.includes(dependency)) {
+        fail(`Updater-enabled RPM is missing the required runtime dependency: ${dependency}.`);
+      }
+    }
+  }
   for (const dependency of externalDependencies) {
     if (!requires.includes(dependency)) {
       fail(`RPM metadata is missing a runtime requirement discovered by ldd: ${dependency}.`);
@@ -480,6 +618,46 @@ async function validateExtractedPayload(rpmPath, workspace, expectedFiles, sourc
     [workspaceFiles.noticePath, path.join(extraction, RPM_LICENSE_PATH.slice(1))],
     [workspaceFiles.stagedIcon, path.join(extraction, workspaceFiles.iconTargetPath.slice(1))],
   ];
+  if (workspaceFiles.withUpdater) {
+    standalonePairs.push(
+      [workspaceFiles.updaterManagerPath, path.join(extraction, RPM_UPDATE_MANAGER_PATH.slice(1))],
+      [workspaceFiles.installHelperPath, path.join(extraction, RPM_INSTALL_HELPER_PATH.slice(1))],
+      [workspaceFiles.updaterServicePath, path.join(extraction, 'usr/lib/systemd/user/factory-update-manager.service')],
+      [workspaceFiles.updaterTimerPath, path.join(extraction, 'usr/lib/systemd/user/factory-update-manager.timer')],
+    );
+    for (const [source, staged] of workspaceFiles.updaterSourcePairs) {
+      const relative = path.relative(workspaceFiles.payloadDirectory, staged);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        fail(`Updater payload source escaped its bundle: ${staged}.`);
+      }
+      const extractedSource = path.join(extraction, RPM_BUNDLE_ROOT.slice(1), relative);
+      const sourceDetails = await lstat(source);
+      const sourceHash = sourceDetails.isDirectory()
+        ? await hashTreeWithModes(source)
+        : await sha256File(source);
+      const extractedHash = sourceDetails.isDirectory()
+        ? await hashTreeWithModes(extractedSource)
+        : await sha256File(extractedSource);
+      if (sourceHash !== extractedHash) {
+        fail(`Extracted updater recipe/runtime differs from its staged source: ${relative}.`);
+      }
+    }
+    const runtimeManifest = await readJson(
+      path.join(extractedBundle, 'updater', 'runtime-manifest.json'),
+      'packaged updater runtime manifest',
+    );
+    if (
+      runtimeManifest.version !== (await readJson(path.join(ROOT, 'versions.json'))).updaterNode ||
+      runtimeManifest.npmVersion !== (await readJson(path.join(ROOT, 'versions.json'))).updaterNpm ||
+      runtimeManifest.architecture !== 'x64' ||
+      runtimeManifest.sha256 !== await sha256File(path.join(extractedBundle, 'updater', 'bin', 'node')) ||
+      runtimeManifest.npmTreeSha256 !== await hashTreeWithModes(
+        path.join(extractedBundle, 'updater', 'node_modules', 'npm'),
+      )
+    ) {
+      fail('Packaged updater Node runtime does not match its checksum-pinned manifest.');
+    }
+  }
   for (const [source, extracted] of standalonePairs) {
     if (await sha256File(source) !== await sha256File(extracted)) {
       fail(`Extracted RPM standalone payload does not match its staged source: ${path.basename(source)}.`);
@@ -646,6 +824,7 @@ async function publishOutputs(rpmSource, rpmPath, checksumPath, rpmSha256) {
 }
 
 async function main() {
+  const withUpdater = process.env.PACKAGE_WITH_UPDATER === '1';
   const host = await detectBuildHost();
   if (!host.supported || host.profile?.id !== 'fedora' || host.profile?.version !== '44' ||
       host.nodeArchitecture !== 'x64') {
@@ -656,9 +835,8 @@ async function main() {
 
   const distribution = distributionDirectory();
   const buildDirectory = path.join(ROOT, 'build');
-  const verification = await verifyPortableDistribution(distribution, buildDirectory);
+  const verification = await verifyPortableDistribution(distribution, buildDirectory, { withUpdater });
   const icon = await readPortableIcon(distribution, verification.manifest);
-  const elfDetails = await readElfDetails(distribution);
   const dist = run('rpm', ['--eval', '%{?dist}']).stdout.trim();
   const outputDirectory = path.join(ROOT, 'dist', 'rpm');
   const outputPaths = rpmOutputPaths(outputDirectory, {
@@ -669,11 +847,13 @@ async function main() {
   await assertSafeOutputDirectory(outputDirectory);
   await assertNoRpmOutputCollisions(outputPaths, exists);
 
-  const workspace = await createWorkspace(distribution, icon);
+  const workspace = await createWorkspace(distribution, icon, { withUpdater });
+  const elfDetails = await readElfDetails(workspace.payloadDirectory);
   const layout = rpmPayloadLayout(
-    (await walkFiles(distribution)).map((file) => path.relative(distribution, file)),
+    (await walkFiles(workspace.payloadDirectory)).map((file) => path.relative(workspace.payloadDirectory, file)),
     icon.path,
-    (await walkDirectories(distribution)).map((directory) => path.relative(distribution, directory)),
+    (await walkDirectories(workspace.payloadDirectory)).map((directory) => path.relative(workspace.payloadDirectory, directory)),
+    { withUpdater },
   );
   const buildOutput = runRpmbuild(workspace, host, elfDetails.sonames);
   const candidates = (await walkFiles(path.join(workspace.top, 'RPMS')))

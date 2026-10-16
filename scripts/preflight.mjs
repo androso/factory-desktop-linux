@@ -1,8 +1,11 @@
+import { readFile } from 'node:fs/promises';
 import { run } from './lib.mjs';
+import versions from '../versions.json' with { type: 'json' };
 import {
   COMMON_BUILD_COMMANDS,
   FEDORA_RPM_COMMANDS,
   OPTIONAL_BUILD_COMMANDS,
+  UBUNTU_DEB_COMMANDS,
   detectBuildHost,
   packageInstallCommand,
   packagesForMissingPrerequisites,
@@ -11,13 +14,15 @@ import {
 
 const host = await detectBuildHost();
 const issues = [];
+const warnings = [];
 const requiredCommands = requiredCommandsForHost(host.profile);
 const evidence = {
   checkedAt: new Date().toISOString(),
   requested: {
-    distributions: ['Ubuntu 24.04', 'Fedora 44'],
+    distributions: ['Ubuntu 24.04 portable builds', 'Ubuntu 26.04 DEB/native', 'Fedora 44 RPM/native'],
     architecture: 'x86_64',
     fedoraRpmTarget: 'Fedora 44 x86_64 only',
+    ubuntuDebTarget: 'Ubuntu 26.04 x86_64 only',
   },
   observed: {
     distribution: host.displayName,
@@ -30,6 +35,7 @@ const evidence = {
   requiredCommands,
   buildCommands: COMMON_BUILD_COMMANDS,
   fedoraRpmCommands: host.profile?.rpmPackaging ? FEDORA_RPM_COMMANDS : [],
+  ubuntuDebCommands: host.profile?.debPackaging ? UBUNTU_DEB_COMMANDS : [],
   optionalCommands: OPTIONAL_BUILD_COMMANDS,
   missingCommands: [],
   missingRequiredCommands: [],
@@ -40,6 +46,19 @@ const evidence = {
   },
   missingSystemPackages: [],
   approvalRequired: [],
+  warnings,
+  updaterRuntime: {
+    requiredNode: versions.updaterNode,
+    requiredNpm: versions.updaterNpm,
+    observedNode: run('node', ['--version']).stdout.trim().replace(/^v/, '') || null,
+    observedNpm: run('npm', ['--version']).stdout.trim() || null,
+    matchesPins: false,
+  },
+  apparmor: {
+    enabled: null,
+    restrictsUnprivilegedUserNamespaces: null,
+    detail: 'Electron sandbox startup must be confirmed in a graphical Ubuntu 26.04 session.',
+  },
   sandbox: {
     check: 'unshare -Ur true',
     status: 'not-checked',
@@ -48,6 +67,30 @@ const evidence = {
 };
 
 issues.push(...host.issues);
+evidence.updaterRuntime.matchesPins =
+  evidence.updaterRuntime.observedNode === evidence.updaterRuntime.requiredNode &&
+  evidence.updaterRuntime.observedNpm === evidence.updaterRuntime.requiredNpm;
+if (process.env.PACKAGE_WITH_UPDATER === '1' && !evidence.updaterRuntime.matchesPins) {
+  issues.push(
+    `Managed package creation requires Node ${evidence.updaterRuntime.requiredNode} and npm ${evidence.updaterRuntime.requiredNpm}; found Node ${evidence.updaterRuntime.observedNode ?? 'missing'} and npm ${evidence.updaterRuntime.observedNpm ?? 'missing'}.`,
+  );
+}
+
+if (host.id === 'ubuntu') {
+  evidence.apparmor.enabled = (await readFile('/sys/module/apparmor/parameters/enabled', 'utf8')
+    .catch(() => '')).trim().toLowerCase().startsWith('y');
+  const restriction = (await readFile(
+    '/proc/sys/kernel/apparmor_restrict_unprivileged_userns',
+    'utf8',
+  ).catch(() => '')).trim();
+  evidence.apparmor.restrictsUnprivilegedUserNamespaces =
+    restriction === '' ? null : restriction === '1';
+  if (host.version === '26.04' && restriction === '1') {
+    warnings.push(
+      'AppArmor restricts unprivileged user namespaces. No system policy or Electron sandbox workaround was applied; verify GUI startup in a disposable Ubuntu 26.04 session.',
+    );
+  }
+}
 
 for (const command of evidence.requiredCommands) {
   if (run('sh', ['-c', `command -v '${command}'`]).status !== 0) {
@@ -109,3 +152,4 @@ if (issues.length) {
   for (const issue of issues) console.error(`preflight: ${issue}`);
   process.exitCode = 1;
 }
+for (const warning of warnings) console.warn(`preflight warning: ${warning}`);

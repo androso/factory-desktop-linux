@@ -1,10 +1,190 @@
 # Validation report
 
-**Checked:** 2026-10-10
-**Result:** The release-7 personal-use RPM and CLI-upgrade portable bundle were
-built and verified with Desktop 0.194.0, Droid CLI 0.238.0, and Electron
-42.11.12. Release 7 was not installed. Authenticated desktop/CLI compatibility
-is still unverified.
+**Checked:** 2026-10-16
+**Result:** The official-app parity portable bundle has been built, verified,
+and smoke-tested to the signed-out welcome screen. The installed release-8
+RPM was left unchanged. The managed updater build remains unvalidated.
+Authenticated desktop/CLI compatibility is still unverified.
+
+## Daemon model catalog compatibility
+
+- Desktop 0.194.0 reconstructs built-in models from its bundled frontend
+  registry. New chats prefer this list over daemon built-ins; existing chats
+  retain only custom entries from session catalogs. Argon is absent from that
+  old registry even though bundled CLI 0.240.1 contains it.
+- Added exact-version compatibility patches for new-chat, existing-session,
+  and connected automation model selectors. The renderer supplements its
+  existing policy-filtered list with built-ins actually returned by the
+  daemon, retaining metadata, reasoning options, and disabled reasons.
+  A disabled result from either source cannot be re-enabled by the merge.
+- Custom models keep their existing organization/BYOK flow. Automation
+  catalog queries no longer depend on the custom-model feature flag, but
+  custom-model visibility still does. Air-gap chat paths remain custom-only.
+  Main and renderer session schemas now preserve optional disabled metadata.
+- No preview flag, authentication state, CLI version, installed application,
+  or user profile is modified by these source changes. They require a newly
+  built bundle. Authenticated GUI selection and inference remain untested.
+- `npm run check`, the helper's syntax check, and all 100 tests passed with
+  no skips. Eleven model-catalog regressions reproduce the old omission,
+  test the patched official chat hook, and cover disabled states, duplicate
+  IDs, absent daemon catalogs, air-gap behavior, and automation BYOK gating.
+  Exact patches and syntax checks passed in both updater modes.
+- `FACTORY_DIST_NAME=factory-desktop-linux-model-catalog PACKAGE_WITH_UPDATER=0 npm run build`
+  created a separate portable bundle without replacing earlier outputs.
+  The matching `npm run verify` passed all 12 checks and recorded 29 patches.
+  No package was installed and no authenticated model task was submitted.
+
+## Legacy RPM runtime metadata verification
+
+- The next installation attempt built its RPM, then stopped before installing:
+  `rpm -V` returned `..?......` only for
+  `/opt/factory-desktop-linux/runtime-manifest.json`. The installed RPM records
+  that file as root-owned `0600`, so its checksum is unreadable to the normal
+  user. This result alone is not evidence of changed bytes.
+- New bundles normalize that public metadata to `0644`; bundle verification
+  enforces the mode. For legacy installs, only the exact isolated
+  unreadable-runtime-metadata diagnostic permits retrying the full `rpm -V`
+  through sudo. No file, checksum, or permission verification is skipped.
+  The sudo command inherits the terminal so its password prompt is visible.
+- Native command failures now retain stdout, stderr, and exit status, rather
+  than reporting only `exit 1`. Regression tests cover clean verification,
+  legacy verification in both native RPM entrypoints, real mismatches,
+  unexpected failures, and cancelled or failed privileged verification.
+- `npm run check` and all 89 tests passed in the main checkout. Fresh native
+  builds passed 87 tests with the two expected pre-extraction skips, followed
+  by all 12 bundle checks. The first packaging command hit the 300-second
+  execution limit; a longer retry reused the verified bundle and completed
+  `PACKAGE_WITH_UPDATER=0 make rpm`.
+- RPM metadata confirms the new runtime manifest has mode `0100644`.
+  The verified RPM is under
+  `build/native/workspaces/8d93e72acdaa-796bf9c3-3b22-464a-8f45-3a4e5cd78b5d/dist/rpm/`;
+  its SHA-256 is
+  `c9a5d75790310686e29250f765a4cf1191acc8969f13f2b917e56211f1181572`.
+  The native state now caches this ready artifact. The actual privileged
+  verification and installation remain for the user to authorize.
+- No installed files, user profiles, CLI binaries, or desktop associations
+  were changed. The optional Xvfb sandbox smoke check remains skipped.
+
+## Fresh native workspace regression fix
+
+- The first native installation attempt stopped before installation because
+  the patch integration test expected an extracted app during the earlier
+  synthetic-test stage. `walkFiles` returns an empty list for a missing
+  directory, rather than raising the `ENOENT` that the test expected.
+- Extraction-dependent tests now explicitly check for the app directory.
+  They skip only when extraction has not happened; a present but empty or
+  incomplete extracted app still fails. Two subprocess regression tests
+  exercise fresh native source snapshots and invalid extracted bundles.
+- `npm test` passed all 84 tests in the main checkout, with no skips.
+  `PACKAGE_WITH_UPDATER=0 make build-app` then completed in a fresh native
+  workspace: 82 tests passed, two extraction-dependent tests skipped,
+  extraction/build succeeded, and all 12 bundle verification checks passed.
+  `git diff --check` passed. No package installation or profile changes ran.
+
+## Official-app parity: Linux profiles and CLI setup
+
+- Kept the official bundled-daemon architecture, login-shell loader, and
+  existing CLI menu/sign-in/policy flow. Seven exact Linux-only patches route
+  CLI setup through a packaged, checksum-recorded integration helper and
+  preserve launcher-owned environment variables during shell loading.
+- Isolated remains the default. Explicit shared mode uses the real user home
+  and host XDG environment, with separate Electron user data. No profile
+  migration, existing CLI installation, or real shell configuration change
+  was performed.
+- `npm run check`, `node --check scripts/linux-cli.cjs`, and `git diff --check`
+  passed. `npm test` passed all 82 tests, with no skips. The 13 new tests cover
+  profiles, quoting, display/environment preservation, real-home CLI setup,
+  checksum/file-identity ownership, existing files and broken symlinks, shell
+  PATH configuration, non-Linux fallbacks, both patch modes, and the official
+  Unix loader's tool discovery and failed-shell fallback.
+- `FACTORY_DIST_NAME=factory-desktop-linux-parity PACKAGE_WITH_UPDATER=0 npm run build`
+  produced `dist/factory-desktop-linux-parity/`. The matching `npm run verify`
+  passed all 12 checks, including 18 recorded patches, helper integrity,
+  Electron/native keytar loading, and bundled Droid 0.240.1 options.
+- A separate test launcher used a fresh HOME/profile, disabled keyring access,
+  and a cleared environment retaining only display/session prerequisites.
+  The real Electron app displayed the welcome screen and logged successful
+  shell-environment loading. Its debug listener bound only to `127.0.0.1`;
+  the test process and listener were stopped afterward. No login or model
+  task was submitted. Screenshot evidence:
+  `build/parity-gui-UYcC7B/welcome.png`.
+- Startup logged expected first-run missing-log/empty-credential warnings,
+  plus host MIME-cache and VSync warnings. These did not block the welcome
+  screen. Authenticated CLI-menu clicks, shared-profile login/session
+  interoperability, and full Wayland lifecycle behavior remain untested.
+- No replacement RPM was packaged or installed. Earlier bundles, RPMs,
+  terminal Droid, user profiles, and desktop associations were preserved.
+
+## Argon CLI upgrade (release 8, manual-update mode)
+
+- The installed release-7 desktop bundles CLI 0.238.0, while the global
+  terminal CLI reports 0.240.1. The desktop renderer gets available models
+  from the bundled daemon using `daemon.list_models` and session settings.
+- The official npm registry reports CLI 0.240.1. `versions.json`,
+  `package.json`, `package-lock.json`, and the exact-pin regression test now
+  target that version, with the registry's tarball URL and SHA-512 integrity.
+- `npm run clean-install` created
+  `build/toolchain-0.240.1-ee0516cbe462/` with lifecycle scripts disabled.
+  Existing toolchains, bundles, the global CLI, and user data were preserved.
+- `npm run check` passed. `npm test` passed all 69 tests.
+  `npm run daemon:check` passed the exact desktop startup arguments,
+  loopback-only binding, WebSocket upgrade, and clean liveness-pipe shutdown.
+  No authentication, RPC, or model request was sent.
+- `FACTORY_DIST_NAME=factory-desktop-linux-argon npm run build` produced a
+  fresh bundle; the matching `npm run verify` passed all 12 checks, including
+  native keytar loading under Electron. The packaged CLI reports 0.240.1 and
+  contains `GEMINI_4_ARGON="gemini-4-argon"`. ID presence does not prove a
+  successful authenticated model selection or request.
+- `FACTORY_DIST_NAME=factory-desktop-linux-argon npm run package:rpm` passed
+  bundle fingerprint, metadata, dependency, payload, ownership, permission,
+  and desktop-entry checks. This manual-update package does not include or
+  enable the managed updater.
+- The Electron GUI smoke check was skipped because `xvfb-run` is unavailable.
+  No RPM installation, callback change, or authenticated GUI check was run.
+
+Artifacts:
+
+```text
+dist/factory-desktop-linux-argon/
+dist/rpm/factory-desktop-linux-0.194.0-8.fc44.x86_64.rpm
+dist/rpm/factory-desktop-linux-0.194.0-8.fc44.x86_64.rpm.sha256
+```
+
+RPM SHA-256:
+`5b1f299ef1076296623163566268cea8063920713e8be8dfd73975256edb653d`.
+
+Verification report:
+`build/verification-report-2026-10-13T20-56-53-748Z.json`.
+
+## Ubuntu 26.04 managed DEB support (source validation only)
+
+- Added Ubuntu 26.04 x86_64 host detection, apt prerequisite guidance, DEB
+  package creation, native apt operations, package-format-specific source
+  fingerprints, state handling, updater dispatch, and Ubuntu AppArmor
+  restriction reporting. Ubuntu 24.04 remains portable-build-only; Fedora 44
+  remains the supported RPM/native target.
+- The DEB builder verifies the portable build report, derives runtime library
+  dependencies with `dpkg-shlibdeps`, includes the pinned managed updater
+  runtime, creates a script-free `amd64` package, extracts it again, and
+  compares payload bytes and modes before publishing a non-overwriting
+  artifact and SHA-256 sidecar.
+- The root helper streams and validates DEB control/data tar members. It
+  rejects maintainer scripts, triggers, unexpected paths/types/modes,
+  dependency changes, and helper replacement. A synthetic DEB built with the
+  host's real `dpkg-deb` passed archive validation. Native and updater tests
+  cover DEB identity, apt command selection, and package-format dispatch.
+- `npm run clean-install`, `npm run check`, `npm run check:native`, `npm test`,
+  and `git diff --check` passed on Fedora 44 x86_64. All 69 tests passed,
+  including an archive built by the host's real `dpkg-deb`.
+- No Ubuntu package was built or installed. This host is Fedora 44, so the
+  package builder's Ubuntu-only end-to-end checks, Ubuntu 26.04 installation,
+  rollback/recovery, graphical smoke test, `pkexec`, systemd user timer, and
+  AppArmor sandbox behavior remain unvalidated. The source makes no
+  system-wide AppArmor changes and does not disable Electron's sandbox.
+- Managed DEB packaging requires Node 24.19.0 and npm 11.17.0. Preflight
+  checks these pins; Ubuntu archive packages may not match. No NodeSource
+  repository, remote installer script, system package installation, or
+  privileged command was run during this implementation.
 
 ## Fedora native installation/update workflow
 
@@ -38,6 +218,31 @@ is still unverified.
 - No existing RPM was replaced, user data changed, callback registered, or
   model request sent. Native updates use pinned recipes from a trusted checkout;
   no background service or automatic upstream-version discovery was enabled.
+
+## Managed updater source release 8 (not built)
+
+- Added a managed-only updater with approved-origin release discovery, verified
+  candidate RPM builds, user authorization, app-exit handoff, rollback,
+  recovery, legacy-state migration, and a per-user systemd timer.
+- Fixed candidate builds to use the native distribution name, made recovery
+  retry idempotent updater setup, limited successful background checks to the
+  six-hour timer interval, and reused the bundle file scan and shared HTTPS
+  redirect validation.
+- `npm run clean-install`, `npm run check`, `npm run check:native`, and
+  `npm test` passed. All 63 tests passed. `git diff --check` passed.
+- Systemd unit syntax passed `systemd-analyze verify` against temporary copies.
+  The service command was mapped to `/usr/bin/true` for this syntax-only check
+  because the managed manager is not installed. No service was enabled.
+- The full managed-mode portable build and release-8 RPM packaging were not
+  run. The synthetic RPM/helper tests do not exercise an actual `pkexec`,
+  DNF transaction, package rollback, or installed updater timer.
+- Policy freshness deliberately fails closed after five minutes. The timer does
+  not refresh account policy while Desktop is closed, so a stale policy cache
+  blocks background release checks. The user-owned policy cache is not a
+  tamper-proof organization enforcement mechanism.
+- The bundled updater Node executable is copied from the build host after an
+  exact version check. Its recorded digest protects the packaged copy from
+  later changes but does not establish official Node binary provenance.
 
 ## Release-7 CLI upgrade
 

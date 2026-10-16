@@ -5,13 +5,13 @@ import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import versions from '../versions.json' with { type: 'json' };
-import { ROOT, fail, sha256File, toolRequire } from './lib.mjs';
+import { fetchApprovedHttps, ROOT, fail, sha256File, toolRequire } from './lib.mjs';
 import { inspectArchive } from './archive.mjs';
 
 const require = toolRequire(import.meta.url);
 const sevenZip = require('7zip-bin');
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024;
-const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
+const APPROVED_DOWNLOAD_ORIGINS = new Set(['https://downloads.factory.ai']);
 
 function responseEvidence(headers) {
   const evidence = {};
@@ -49,72 +49,52 @@ function parseSha256Evidence(headers) {
 }
 
 async function downloadHttps(url, outputPath) {
-  const redirects = [];
-  let current = new URL(url);
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    if (current.protocol !== 'https:' || current.username || current.password) {
-      fail(`Refusing non-HTTPS or credentialed download URL: ${current.origin}`);
-    }
-    const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(120_000) });
-    if (REDIRECT_CODES.has(response.status)) {
-      const location = response.headers.get('location');
-      if (!location) fail(`HTTPS redirect from ${current.origin} had no Location header.`);
-      const next = new URL(location, current);
-      if (next.protocol !== 'https:' || next.username || next.password) {
-        fail(`Refusing unsafe download redirect: ${next.origin}`);
-      }
-      redirects.push({
-        status: response.status,
-        from: current.origin,
-        to: next.origin,
-      });
-      await response.body?.cancel();
-      current = next;
-      continue;
-    }
-    if (response.status !== 200 || !response.body) {
-      await response.body?.cancel();
-      fail(`Download returned HTTP ${response.status} from ${current.origin}; expected HTTP 200.`);
-    }
-    const evidence = responseEvidence(response.headers);
-    const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
-    if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
-      await response.body.cancel();
-      fail(`Download returned an HTML content type (${contentType}); refusing to save an error page.`);
-    }
-    const announcedLength = Number(response.headers.get('content-length') ?? 0);
-    if (announcedLength > MAX_DOWNLOAD_BYTES) {
-      await response.body.cancel();
-      fail(`Download exceeds the maximum permitted size (${MAX_DOWNLOAD_BYTES} bytes).`);
-    }
-    let downloadedBytes = 0;
-    const limitedBody = async function* () {
-      for await (const chunk of response.body) {
-        downloadedBytes += chunk.length;
-        if (downloadedBytes > MAX_DOWNLOAD_BYTES) {
-          throw new Error(`Download exceeds the maximum permitted size (${MAX_DOWNLOAD_BYTES} bytes).`);
-        }
-        yield chunk;
-      }
-    };
-    try {
-      await pipeline(Readable.from(limitedBody()), createWriteStream(outputPath, { flags: 'wx', mode: 0o600 }));
-    } catch (error) {
-      throw new Error(`Download stream failed: ${error.message}`);
-    }
-    if (announcedLength && downloadedBytes !== announcedLength) {
-      fail(`Download length mismatch: server announced ${announcedLength} bytes, received ${downloadedBytes}.`);
-    }
-    return {
-      finalUrl: current.toString(),
-      status: response.status,
-      headers: evidence,
-      redirects,
-      serverSha256: parseSha256Evidence(response.headers),
-      size: downloadedBytes,
-    };
+  const { response, current, redirects } = await fetchApprovedHttps(url, {
+    allowedOrigins: APPROVED_DOWNLOAD_ORIGINS,
+    timeoutMs: 120_000,
+    label: 'download',
+  });
+  if (response.status !== 200 || !response.body) {
+    await response.body?.cancel();
+    fail(`Download returned HTTP ${response.status} from ${current.origin}; expected HTTP 200.`);
   }
-  fail('Download exceeded the redirect limit.');
+  const evidence = responseEvidence(response.headers);
+  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+  if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+    await response.body.cancel();
+    fail(`Download returned an HTML content type (${contentType}); refusing to save an error page.`);
+  }
+  const announcedLength = Number(response.headers.get('content-length') ?? 0);
+  if (announcedLength > MAX_DOWNLOAD_BYTES) {
+    await response.body.cancel();
+    fail(`Download exceeds the maximum permitted size (${MAX_DOWNLOAD_BYTES} bytes).`);
+  }
+  let downloadedBytes = 0;
+  const limitedBody = async function* () {
+    for await (const chunk of response.body) {
+      downloadedBytes += chunk.length;
+      if (downloadedBytes > MAX_DOWNLOAD_BYTES) {
+        throw new Error(`Download exceeds the maximum permitted size (${MAX_DOWNLOAD_BYTES} bytes).`);
+      }
+      yield chunk;
+    }
+  };
+  try {
+    await pipeline(Readable.from(limitedBody()), createWriteStream(outputPath, { flags: 'wx', mode: 0o600 }));
+  } catch (error) {
+    throw new Error(`Download stream failed: ${error.message}`);
+  }
+  if (announcedLength && downloadedBytes !== announcedLength) {
+    fail(`Download length mismatch: server announced ${announcedLength} bytes, received ${downloadedBytes}.`);
+  }
+  return {
+    finalUrl: current.toString(),
+    status: response.status,
+    headers: evidence,
+    redirects,
+    serverSha256: parseSha256Evidence(response.headers),
+    size: downloadedBytes,
+  };
 }
 
 async function checkAuthenticode(filePath) {
