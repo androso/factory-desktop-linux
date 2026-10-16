@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { access, lstat, mkdir, readFile, readdir } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, readFile, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -171,7 +171,25 @@ export async function hashFilesInTree(directory, prefix = '') {
   return createHash('sha256').update(JSON.stringify(files)).digest('hex');
 }
 
-export async function hashTreeWithModes(directory) {
+// Root-owned package payloads must stay readable by the normal user who runs
+// the app and `rpm -V`, even when the working tree was written with umask 077.
+export function publicMode(mode, { directory = false } = {}) {
+  return directory || (mode & 0o100) ? 0o755 : 0o644;
+}
+
+export async function normalizePublicModes(target) {
+  const details = await lstat(target);
+  if (details.isSymbolicLink()) fail(`Cannot normalize a symbolic link: ${target}`);
+  const mode = details.mode & 0o7777;
+  const expected = publicMode(mode, { directory: details.isDirectory() });
+  if (mode !== expected) await chmod(target, expected);
+  if (!details.isDirectory()) return;
+  const entries = await readdir(target);
+  entries.sort((a, b) => a.localeCompare(b));
+  for (const entry of entries) await normalizePublicModes(path.join(target, entry));
+}
+
+export async function hashTreeWithModes(directory, { expectPublicModes = false } = {}) {
   const records = [];
 
   async function visit(target, relativePath) {
@@ -179,7 +197,10 @@ export async function hashTreeWithModes(directory) {
     if (details.isSymbolicLink()) {
       fail(`Cannot fingerprint a tree containing a symbolic link: ${relativePath || '.'}.`);
     }
-    const mode = details.mode & 0o7777;
+    const actualMode = details.mode & 0o7777;
+    const mode = expectPublicModes
+      ? publicMode(actualMode, { directory: details.isDirectory() })
+      : actualMode;
     const portablePath = relativePath.split(path.sep).join('/') || '.';
     if (details.isDirectory()) {
       records.push({ path: portablePath, type: 'directory', mode });

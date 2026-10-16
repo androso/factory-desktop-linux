@@ -54,26 +54,35 @@ test('clean installed RPM verification does not request elevated access', () => 
   assert.deepEqual(calls, [['rpm', ['-V', 'factory-desktop-linux'], { capture: true }]]);
 });
 
-test('legacy unreadable runtime metadata triggers full privileged RPM verification', () => {
-  for (const createBackend of [
-    () => rpmBackend(),
-    (run) => new NativeWorkflow('/repo', run).backend,
+test('legacy unreadable package files trigger full privileged RPM verification', () => {
+  const recipes = [
+    '..?......    /opt/factory-desktop-linux/updater/recipes/Makefile',
+    '..?......    /opt/factory-desktop-linux/updater/recipes/scripts/native.mjs',
+    '..?......    /opt/factory-desktop-linux/updater/recipes/tests/rpm.test.mjs',
+  ].join('\n');
+  for (const stdout of [
+    '..?......    /opt/factory-desktop-linux/runtime-manifest.json\n',
+    `${recipes}\n`,
+    `..?......    /opt/factory-desktop-linux/runtime-manifest.json\n${recipes}\n`,
   ]) {
-    const calls = [];
-    const run = (command, args, options) => {
-      calls.push([command, args, options]);
-      if (command === 'rpm') {
-        throw Object.assign(new Error('metadata unreadable'), {
-          status: 1, stdout: '..?......    /opt/factory-desktop-linux/runtime-manifest.json\n', stderr: '',
-        });
-      }
-      return '';
-    };
-    createBackend(run).verifyInstalled(run);
-    assert.deepEqual(calls, [
-      ['rpm', ['-V', 'factory-desktop-linux'], { capture: true }],
-      ['sudo', ['rpm', '-V', 'factory-desktop-linux'], { capture: false }],
-    ]);
+    for (const createBackend of [
+      () => rpmBackend(),
+      (run) => new NativeWorkflow('/repo', run).backend,
+    ]) {
+      const calls = [];
+      const run = (command, args, options) => {
+        calls.push([command, args, options]);
+        if (command === 'rpm') {
+          throw Object.assign(new Error('metadata unreadable'), { status: 1, stdout, stderr: '' });
+        }
+        return '';
+      };
+      createBackend(run).verifyInstalled(run);
+      assert.deepEqual(calls, [
+        ['rpm', ['-V', 'factory-desktop-linux'], { capture: true }],
+        ['sudo', ['rpm', '-V', 'factory-desktop-linux'], { capture: false }],
+      ]);
+    }
   }
 });
 
@@ -85,6 +94,11 @@ test('RPM verification never ignores changed files, other unreadable files, or o
     { status: 2, stdout: '..?......    /opt/factory-desktop-linux/runtime-manifest.json\n' },
     { status: 1, stdout: '..?......    /opt/factory-desktop-linux/runtime-manifest.json\n', stderr: 'RPM database error' },
     { status: 1, stdout: '' },
+    { status: 1, stdout: '..?......    /opt/factory-desktop-linux/updater/bin/node\n' },
+    { status: 1, stdout: 'S.?......    /opt/factory-desktop-linux/updater/recipes/Makefile\n' },
+    { status: 1, stdout: '..?......    /opt/factory-desktop-linux/updater/recipes/Makefile\n..5......    /opt/factory-desktop-linux/launch.sh\n' },
+    { status: 1, stdout: '..?......    /opt/factory-desktop-linux/updater/recipes/../factory-desktop\n' },
+    { status: 1, stdout: '..?......    /opt/factory-desktop-linux/updater/recipes/\n' },
   ]) {
     const failure = Object.assign(new Error('verification failed'), diagnostic);
     let calls = 0;

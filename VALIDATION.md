@@ -24,6 +24,24 @@ Authenticated desktop/CLI compatibility is still unverified.
 - The old isolated-profile computer registration was removed with
   `droid computer remove` so the desktop can re-register this machine under
   its host name with the shared `hostId`.
+- That `make rpm` used the default managed-updater mode. Its install
+  succeeded in DNF, but post-install `rpm -V` reported `..?......` for 24
+  `updater/recipes/` files: the working tree had `0600` sources (umask 077),
+  `cp` preserved them, and only payload directories were normalized. The
+  updater could not read its own recipes, so the launcher skipped it and
+  the timer stayed disabled.
+- Recipe copies are now normalized to `0644`/`0755` in the RPM and DEB
+  updater paths. RPM extraction checks compare them with the source using
+  the expected public modes, and metadata validation rejects any other
+  recipe mode. The sudo `rpm -V` retry also accepts unreadable legacy
+  recipe paths only; changed files and other unreadable paths still fail.
+- `npm run check`, `npm run check:native`, `git diff --check`, and all 101
+  tests passed. Against the installed package's real `rpm -V` output, the
+  verifier took the full privileged retry path. A throwaway updater-mode
+  repackage from the `0600` workspace passed all packaging checks and
+  shipped 54 recipe files as `0644` and 2 as `0755`; it was not installed.
+- The user chose to return to the manual-update build:
+  `make recover`, then `PACKAGE_WITH_UPDATER=0 make install-native`.
 
 ## Daemon model catalog compatibility
 

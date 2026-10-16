@@ -4,7 +4,7 @@ import {
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  ROOT, assertElfX64, fail, hashTreeWithModes, readJson, sha256File, walkFiles,
+  ROOT, assertElfX64, fail, hashTreeWithModes, normalizePublicModes, readJson, sha256File, walkFiles,
 } from './lib.mjs';
 import { SOURCE_INPUTS } from './native.mjs';
 
@@ -81,6 +81,7 @@ export async function stageUpdaterRuntime(bundleRoot, {
       path.join(recipesRoot, name),
       { recursive: true, errorOnExist: true },
     );
+    await normalizePublicModes(path.join(recipesRoot, name));
   }
   return { updaterRoot, nodePath, recipesRoot, npmDirectory, npmTreeSha256 };
 }

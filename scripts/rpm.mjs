@@ -11,18 +11,32 @@ export const RPM_DESKTOP_PATH = '/usr/share/applications/factory-desktop-linux.d
 export const RPM_LICENSE_PATH =
   `/usr/share/licenses/${RPM_PACKAGE_NAME}/PERSONAL-USE-NOTICE.txt`;
 
+// Older bundles shipped these public files as root-only (0600): the runtime
+// manifest, and updater recipes copied from a umask-077 working tree.
+const LEGACY_UNREADABLE_PATTERNS = [
+  /^\/opt\/factory-desktop-linux\/runtime-manifest\.json$/,
+  /^\/opt\/factory-desktop-linux\/updater\/recipes\/[A-Za-z0-9._/+-]+$/,
+];
+
+function onlyLegacyUnreadable(stdout) {
+  const lines = stdout.trim().split('\n');
+  return lines.every((line) => {
+    const match = /^\.\.\?\.{6}\s+(\/\S+)$/.exec(line);
+    return match && !match[1].split('/').includes('..') &&
+      LEGACY_UNREADABLE_PATTERNS.some((pattern) => pattern.test(match[1]));
+  });
+}
+
 export function verifyInstalledRpm(run) {
   try {
     run('rpm', ['-V', RPM_PACKAGE_NAME], { capture: true });
   } catch (error) {
-    // Older bundles shipped this public metadata as root-only (0600).
     // A '?' is an unreadable checksum, not a successful integrity check.
     // Retry the full check with authorization, never ignore the file.
-    if (error.status !== 1 || error.stderr?.trim() ||
-        !/^\.\.\?\.{6}\s+\/opt\/factory-desktop-linux\/runtime-manifest\.json$/.test(error.stdout?.trim() ?? '')) {
+    if (error.status !== 1 || error.stderr?.trim() || !onlyLegacyUnreadable(error.stdout ?? '')) {
       throw error;
     }
-    console.log('Legacy runtime metadata is root-only. Verifying the installed RPM through sudo.');
+    console.log('Legacy package files are root-only. Verifying the installed RPM through sudo.');
     run('sudo', ['rpm', '-V', RPM_PACKAGE_NAME], { capture: false });
   }
 }

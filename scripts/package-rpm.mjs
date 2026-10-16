@@ -22,6 +22,7 @@ import {
   fail,
   hashTreeWithModes,
   moveNoReplace,
+  normalizePublicModes,
   readJson,
   requireSuccess,
   run,
@@ -305,7 +306,8 @@ async function createWorkspace(distribution, icon, { withUpdater = false } = {})
       const source = path.join(ROOT, name);
       const destination = path.join(recipesDirectory, name);
       await cp(source, destination, { recursive: true, errorOnExist: true });
-      updaterSourcePairs.push([source, destination]);
+      await normalizePublicModes(destination);
+      updaterSourcePairs.push([source, destination, { expectPublicModes: true }]);
     }
     updaterSourcePairs.push([npmPackage.directory, npmDirectory]);
     updaterSourcePairs.push([process.execPath, nodePath]);
@@ -554,6 +556,12 @@ async function validateRpmMetadata(
        modeFor.get(`${RPM_BUNDLE_ROOT}/updater/npm.sha256`) !== '-rw-r--r--')) {
     fail(`RPM updater payload has unexpected ownership or permissions:\n${ownership}`);
   }
+  for (const [file, mode] of modeFor) {
+    if (file.startsWith(`${RPM_BUNDLE_ROOT}/updater/recipes/`) && !mode.startsWith('d') &&
+        mode !== '-rw-r--r--' && mode !== '-rwxr-xr-x') {
+      fail(`RPM updater recipe must be readable by normal users: ${file} (${mode}).`);
+    }
+  }
 
   const provides = rpmQuery(rpmPath, '[%{PROVIDENAME}\\n]');
   for (const soname of privateSonames) {
@@ -625,7 +633,7 @@ async function validateExtractedPayload(rpmPath, workspace, expectedFiles, sourc
       [workspaceFiles.updaterServicePath, path.join(extraction, 'usr/lib/systemd/user/factory-update-manager.service')],
       [workspaceFiles.updaterTimerPath, path.join(extraction, 'usr/lib/systemd/user/factory-update-manager.timer')],
     );
-    for (const [source, staged] of workspaceFiles.updaterSourcePairs) {
+    for (const [source, staged, hashOptions = {}] of workspaceFiles.updaterSourcePairs) {
       const relative = path.relative(workspaceFiles.payloadDirectory, staged);
       if (relative.startsWith('..') || path.isAbsolute(relative)) {
         fail(`Updater payload source escaped its bundle: ${staged}.`);
@@ -633,7 +641,7 @@ async function validateExtractedPayload(rpmPath, workspace, expectedFiles, sourc
       const extractedSource = path.join(extraction, RPM_BUNDLE_ROOT.slice(1), relative);
       const sourceDetails = await lstat(source);
       const sourceHash = sourceDetails.isDirectory()
-        ? await hashTreeWithModes(source)
+        ? await hashTreeWithModes(source, hashOptions)
         : await sha256File(source);
       const extractedHash = sourceDetails.isDirectory()
         ? await hashTreeWithModes(extractedSource)

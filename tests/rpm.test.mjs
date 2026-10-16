@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
   distributionDirectory,
   hashTreeWithModes,
+  normalizePublicModes,
+  publicMode,
   TARGET_FACTORY_VERSION,
   walkDirectories,
 } from '../scripts/lib.mjs';
@@ -335,6 +337,43 @@ test('portable payload fingerprint detects changed bytes and permissions', async
     await chmod(file, 0o644);
     await writeFile(file, 'changed content');
     assert.notEqual(await hashTreeWithModes(root), first);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('updater recipes copied from a umask-077 tree become publicly readable', async () => {
+  const root = await tempDir('rpm public recipe modes ');
+  try {
+    assert.equal(publicMode(0o600), 0o644);
+    assert.equal(publicMode(0o700), 0o755);
+    assert.equal(publicMode(0o4755), 0o755);
+    assert.equal(publicMode(0o666), 0o644);
+    assert.equal(publicMode(0o700, { directory: true }), 0o755);
+    const source = path.join(root, 'source');
+    const staged = path.join(root, 'staged');
+    await mkdir(path.join(source, 'scripts'), { recursive: true });
+    await writeFile(path.join(source, 'scripts', 'native.mjs'), 'recipe');
+    await writeFile(path.join(source, 'scripts', 'launch.sh'), '#!/bin/sh\n');
+    await chmod(path.join(source, 'scripts', 'native.mjs'), 0o600);
+    await chmod(path.join(source, 'scripts', 'launch.sh'), 0o700);
+    await chmod(path.join(source, 'scripts'), 0o700);
+    await cp(source, staged, { recursive: true });
+    assert.equal(await hashTreeWithModes(staged), await hashTreeWithModes(source));
+    await normalizePublicModes(staged);
+    assert.equal((await stat(path.join(staged, 'scripts'))).mode & 0o7777, 0o755);
+    assert.equal((await stat(path.join(staged, 'scripts', 'native.mjs'))).mode & 0o7777, 0o644);
+    assert.equal((await stat(path.join(staged, 'scripts', 'launch.sh'))).mode & 0o7777, 0o755);
+    assert.notEqual(await hashTreeWithModes(staged), await hashTreeWithModes(source));
+    assert.equal(
+      await hashTreeWithModes(staged),
+      await hashTreeWithModes(source, { expectPublicModes: true }),
+    );
+    await writeFile(path.join(staged, 'scripts', 'native.mjs'), 'changed recipe');
+    assert.notEqual(
+      await hashTreeWithModes(staged),
+      await hashTreeWithModes(source, { expectPublicModes: true }),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
