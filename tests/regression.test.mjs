@@ -281,7 +281,7 @@ fs.writeFileSync(process.env.CAPTURE, JSON.stringify({
       NODE_OPTIONS: '--inspect=127.0.0.1:0',
     };
     const arg = 'space " quote $value %percent%';
-    const normal = spawnSync(launcher, [arg], { env, encoding: 'utf8' });
+    const normal = spawnSync(launcher, ['--factory-profile=isolated', arg], { env, encoding: 'utf8' });
     assert.equal(normal.status, 0, normal.stderr);
     const normalResult = JSON.parse(await readFile(capture, 'utf8'));
     assert.equal(normalResult.args.at(-1), arg);

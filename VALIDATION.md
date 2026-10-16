@@ -6,6 +6,25 @@ and smoke-tested to the signed-out welcome screen. The installed release-8
 RPM was left unchanged. The managed updater build remains unvalidated.
 Authenticated desktop/CLI compatibility is still unverified.
 
+## Shared profile by default (terminal sessions grouped as Local)
+
+- Terminal Droid sessions appeared as "Unregistered Computer". The renderer
+  labels a session Local only when its `hostId` equals the desktop's own
+  `host.json` ID, then falls back to registered computers by `hostId`. The
+  isolated profile had its own `host.json`, so CLI session IDs matched
+  neither. The official Windows/macOS app sets no `FACTORY_HOME_OVERRIDE`
+  and shares `~/.factory` with the CLI.
+- `launch.sh` now defaults to the shared profile; isolated mode remains
+  available through `--factory-profile=isolated` or
+  `FACTORY_LINUX_PROFILE=isolated`. No app code or patch changed.
+- `npm run check`, `git diff --check`, and all 100 tests passed.
+- `make rpm` built release `0.194.0-8.fc44` with the new launcher default;
+  `npm run verify` passed inside the build. The Electron smoke check was
+  skipped because `xvfb-run` is unavailable.
+- The old isolated-profile computer registration was removed with
+  `droid computer remove` so the desktop can re-register this machine under
+  its host name with the shared `hostId`.
+
 ## Daemon model catalog compatibility
 
 - Desktop 0.194.0 reconstructs built-in models from its bundled frontend

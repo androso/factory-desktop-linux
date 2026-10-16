@@ -198,18 +198,19 @@ require('node:fs').writeFileSync(process.env.CAPTURE, JSON.stringify({
   };
 }
 
-test('launcher keeps isolation by default and offers explicit native-like shared configuration', async (t) => {
+test('launcher shares the terminal Droid configuration by default and offers explicit isolation', async (t) => {
   const f = await launcherFixture(t);
   await mkdir(path.join(f.home, '.factory'), { mode: 0o750 });
   const settings = path.join(f.home, '.factory', 'settings.json');
   await writeFile(settings, '{"syntheticPreference":"keep"}');
   const arg = 'project path "quoted" $value %';
-  const isolated = await f.launch([arg]);
+  const isolated = await f.launch(['--factory-profile=isolated', arg]);
   assert.equal(isolated.env.FACTORY_LINUX_PROFILE, 'isolated');
   assert.equal(isolated.env.FACTORY_HOME_OVERRIDE, path.join(f.env.XDG_DATA_HOME, 'factory-desktop-linux', 'factory-home'));
   assert.equal(isolated.env.FACTORY_LINUX_HOST_HOME, f.home);
   assert.equal(isolated.env.FACTORY_LINUX_HOST_CONFIG_HOME, f.env.XDG_CONFIG_HOME);
-  const shared = await f.launch(['--factory-profile=shared', arg]);
+  assert.equal(isolated.args.at(-1), arg);
+  const shared = await f.launch([arg]);
   assert.equal(shared.env.FACTORY_LINUX_PROFILE, 'shared');
   assert.equal(shared.env.FACTORY_HOME_OVERRIDE, f.home);
   assert.equal(shared.env.HOME, f.home);
@@ -227,7 +228,8 @@ test('launcher keeps isolation by default and offers explicit native-like shared
 
 test('profile selection supports an environment default, rejects invalid profiles, and cannot weaken test isolation', async (t) => {
   const f = await launcherFixture(t);
-  assert.equal((await f.launch([], { FACTORY_LINUX_PROFILE: 'shared' })).env.FACTORY_HOME_OVERRIDE, f.home);
+  assert.equal((await f.launch([], { FACTORY_LINUX_PROFILE: 'isolated' })).env.FACTORY_LINUX_PROFILE, 'isolated');
+  assert.equal((await f.launch(['--factory-profile=shared'], { FACTORY_LINUX_PROFILE: 'isolated' })).env.FACTORY_HOME_OVERRIDE, f.home);
   assert.equal((await f.launch(['--factory-profile=isolated'], { FACTORY_LINUX_PROFILE: 'shared' })).env.FACTORY_LINUX_PROFILE, 'isolated');
   for (const value of ['unknown', '', '../shared']) {
     const result = spawnSync(path.join(f.root, 'launch.sh'), [`--factory-profile=${value}`], {

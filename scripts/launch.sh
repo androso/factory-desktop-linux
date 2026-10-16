@@ -3,7 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP="$ROOT/factory-desktop"
-PROFILE="${FACTORY_LINUX_PROFILE:-isolated}"
+PROFILE="${FACTORY_LINUX_PROFILE:-shared}"
 case "${1:-}" in
   --factory-profile=*) PROFILE=${1#--factory-profile=}; shift ;;
 esac

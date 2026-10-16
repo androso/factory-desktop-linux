@@ -456,20 +456,30 @@ models without forcing preview flags or enabling disabled models. Existing
 organization, air-gap, and custom-model controls remain in place. Updating
 terminal Droid alone does not update the desktop's bundled CLI or renderer.
 
-The default **isolated** profile retains the existing
-`~/.local/share/factory-desktop-linux/factory-home/.factory` configuration.
-To opt into the normal user `~/.factory` configuration used by terminal Droid:
+The default **shared** profile uses the normal user `~/.factory`
+configuration, like the official Windows/macOS app. The desktop and terminal
+Droid therefore share one host identity (`~/.factory/host.json`), so sessions
+started from the terminal are grouped under **Local** instead of
+**Unregistered Computer**. To keep using the separate
+`~/.local/share/factory-desktop-linux/factory-home/.factory` configuration:
 
 ```sh
-factory-desktop-linux --factory-profile=shared
+factory-desktop-linux --factory-profile=isolated
 # Or, for a portable build:
-./dist/factory-desktop-linux-parity/launch.sh --factory-profile=shared
+./dist/factory-desktop-linux-parity/launch.sh --factory-profile=isolated
 ```
 
-`FACTORY_LINUX_PROFILE=shared` selects the same mode. A leading
+`FACTORY_LINUX_PROFILE=isolated` selects the same mode. A leading
 `--factory-profile=isolated` or `--factory-profile=shared` overrides that
-environment default. The application-menu launcher remains isolated unless
-its environment explicitly selects shared mode.
+environment default. The application-menu launcher uses shared mode unless
+its environment explicitly selects isolated mode.
+
+The isolated profile has its own host identity. A computer registered from
+that profile does not match terminal Droid sessions. After switching an
+existing install to shared mode, remove the old registration
+(`FACTORY_HOME_OVERRIDE=~/.local/share/factory-desktop-linux/factory-home droid computer remove`
+or **Settings → Droid Computers**) so the desktop can register this machine
+under its host name again.
 
 Shared mode preserves the host XDG environment and uses a separate Electron
 user-data directory, so it cannot silently attach to an isolated-profile
